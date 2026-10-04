@@ -81,7 +81,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: The
 	let active = label("Active") + pathText(snapshot.activePath);
 	const git = snapshot.workspace?.git;
 	if (git?.kind === "repository") active += ` · ${checkout(git.active, theme)}`;
-	else active += theme.fg("dim", git?.kind === "none" ? " · Not a Git repository" : git?.kind === "unknown" ? ` · Git unavailable (${safeText(git.reason)})` : " · Git pending");
+	else if (git?.kind !== "none") active += theme.fg("dim", git?.kind === "unknown" ? ` · Git unavailable (${safeText(git.reason)})` : " · Git pending");
 	add(active);
 	if (git?.kind === "repository") {
 		if (git.main && git.main.path !== git.active.path) add(label("Main") + pathText(git.main.path) + ` · ${checkout(git.main, theme)}`);
@@ -92,8 +92,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: The
 		const pr = snapshot.pullRequest;
 		const prText = pr.kind === "open" ? ` · PR #${pr.number} ${safeText(pr.url)}` : pr.kind === "unavailable" ? ` · PR unavailable (${safeText(pr.reason)})` : "";
 		add(label("GitHub") + safeText(github.name) + prText);
-	} else if (github?.kind === "none") add(theme.fg("dim", "No GitHub remote"));
-	else add(theme.fg("warning", github?.kind === "unknown" ? `GitHub unavailable (${safeText(github.reason)})` : "GitHub pending"));
+	} else if (github?.kind !== "none") add(theme.fg("warning", github?.kind === "unknown" ? `GitHub unavailable (${safeText(github.reason)})` : "GitHub pending"));
 	const usage = snapshot.contextUsage;
 	const window = usage?.contextWindow ?? snapshot.model?.contextWindow;
 	const percent = usage?.percent;

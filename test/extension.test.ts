@@ -162,8 +162,8 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /Context: \?\/128k/);
 	await writeFile(join(f.second, ".slow-git"), "delay");
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
-	await until(() => /Not a Git repository/.test(h.text())); await sleep(700);
-	assert.ok(h.text().includes(`Active: ${f.plain}`)); assert.doesNotMatch(h.text(), /Main:|release/);
+	await until(() => h.text().split("\n").includes(`Active: ${f.plain}`)); await sleep(700);
+	assert.ok(h.text().includes(`Active: ${f.plain}`)); assert.doesNotMatch(h.text(), /Main:|release|Not a Git repository|No GitHub remote/);
 	await h.select(f.second); await sleep(30); const priorRenders = h.renders;
 	await h.stop(); h.runner.invalidate(); await sleep(700);
 	assert.equal(h.renders, priorRenders); assert.equal(h.component, undefined); assert.deepEqual(h.errors, []);

@@ -67,7 +67,15 @@ test("truthful none, unknown, unborn/detached, missing main and PR states", () =
 	let f = fixture();
 	f.workspace = { path: f.activePath, git: { kind: "none" }, github: { kind: "none", reason: "not a repository" } };
 	let output = renderFooter(f, 200, plainTheme).join("\n");
-	assert.match(output, /Not a Git repository/); assert.match(output, /No GitHub remote/); assert.doesNotMatch(output, /Main:/);
+	assert.equal(output.split("\n")[1], `Active: ${f.activePath}`);
+	assert.ok(output.split("\n")[2].startsWith("Context:"), "absent GitHub must not leave an empty row");
+	assert.doesNotMatch(output, /Git|Main:|PR #/);
+	f = fixture();
+	f.workspace!.github = { kind: "none", reason: "No GitHub remote" };
+	output = renderFooter(f, 200, plainTheme).join("\n");
+	assert.match(output, /Active: \/repo\/worktree · feature\/ui · modified/);
+	assert.match(output, /Main: \/repo · release · clean/);
+	assert.doesNotMatch(output, /GitHub|PR #/);
 	f.workspace = { path: f.activePath, git: { kind: "unknown", reason: "timeout" }, github: { kind: "unknown", reason: "ambiguous" } };
 	output = renderFooter(f, 200, plainTheme).join("\n");
 	assert.match(output, /Git unavailable \(timeout\)/); assert.match(output, /GitHub unavailable \(ambiguous\)/); assert.doesNotMatch(output, /clean|No open PR/);

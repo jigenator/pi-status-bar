@@ -13,9 +13,9 @@ The desired tone is factual and compact. Unknowns and failures are named; the in
 Rows appear in this order:
 
 1. Launch path.
-2. Active path plus active Git state or an explicit Git pending/none/unavailable state.
+2. Active path, with Git state when present or pending/unavailable; no Git suffix for a plain directory.
 3. Main checkout only when it is distinct, or its unavailable state when relevant.
-4. GitHub repository plus PR state, or explicit no-remote/unavailable/pending state.
+4. GitHub repository plus any PR state, or an unavailable/pending state; omit this row when no GitHub remote exists.
 5. Context usage and current model/thinking.
 6. One row per other extension status.
 
@@ -25,7 +25,7 @@ Semantic host theme colors communicate dim metadata, success, warning, and error
 
 ## Accessibility and platform behavior
 
-The footer is text-first and keyboard interaction remains Pi's responsibility; this extension adds no focusable controls. It uses host semantic theme colors rather than fixed color values, and every state also has a text label so color is not the sole signal. Every emitted line is bounded to terminal width, including widths narrower than a single wide glyph.
+The footer is text-first and keyboard interaction remains Pi's responsibility; this extension adds no focusable controls. It uses host semantic theme colors rather than fixed color values, and every displayed status includes text so color is not the sole signal. Every emitted line is bounded to terminal width, including widths narrower than a single wide glyph.
 
 Paths, branches, URLs, errors, and status content are treated as untrusted terminal text. Control characters, bidi controls, OSC links, and non-style escapes are removed. Other extensions' SGR color sequences are preserved and reset per status row. Supported colon-form RGB/indexed foreground and background colors are normalized to Pi's semicolon form so their styling also survives wrapping.
 
@@ -34,8 +34,8 @@ Paths, branches, URLs, errors, and status content are treated as untrusted termi
 | State | Display behavior |
 | --- | --- |
 | Initial/local refresh | Active remains visible with Git/GitHub pending until a snapshot arrives |
-| Plain directory | `Not a Git repository` and `No GitHub remote` |
-| Git repository without GitHub | Branch plus clean/modified/unavailable status and `No GitHub remote` |
+| Plain directory | Paths only; omit Git absence text and the GitHub row |
+| Git repository without GitHub | Branch plus clean/modified/unavailable status; omit the GitHub row |
 | Linked worktree | Active checkout and distinct repository-primary checkout each show their own branch/status |
 | Detached or unborn checkout | Detached revision when available, or branch with no revision; never fabricate a branch |
 | Open PR | Repository and validated PR number/URL |
