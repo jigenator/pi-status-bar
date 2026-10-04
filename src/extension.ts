@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -26,6 +27,7 @@ type SessionState = {
 };
 
 export default function (pi: ExtensionAPI) {
+	const homePath = homedir();
 	let session: SessionState | undefined;
 	const current = (s: SessionState) => session === s;
 	const stopWork = (s: SessionState) => {
@@ -121,7 +123,7 @@ export default function (pi: ExtensionAPI) {
 					invalidate() {},
 					render(width) {
 						if (!current(s)) return [];
-						return renderFooter({ launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr, contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(), statuses: footerData.getExtensionStatuses() }, width, theme);
+						return renderFooter({ homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr, contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(), statuses: footerData.getExtensionStatuses() }, width, theme);
 					},
 					dispose() { if (s.requestRender === render) stopWork(s); },
 				};

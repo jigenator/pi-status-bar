@@ -1,8 +1,10 @@
+import { isAbsolute, relative, sep } from "node:path";
 import type { ContextUsage, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { CheckoutInfo, PullRequestInfo, WorkspaceInfo } from "./workspace.ts";
 
 export type FooterSnapshot = {
+	homePath: string;
 	launchPath: string;
 	activePath: string;
 	workspace?: WorkspaceInfo;
@@ -68,22 +70,28 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: The
 		// Guard even against a single wide grapheme at width 1.
 		for (const line of wrapTextWithAnsi(text, width)) lines.push(truncateToWidth(line, width, ""));
 	};
+	const pathText = (path: string) => {
+		if (!isAbsolute(path)) return safeText(path);
+		const suffix = relative(snapshot.homePath, path);
+		const insideHome = !isAbsolute(suffix) && suffix !== ".." && !suffix.startsWith(`..${sep}`);
+		return safeText(!suffix ? "~" : insideHome ? `~${sep}${suffix}` : path);
+	};
 	const label = (name: string) => theme.fg("dim", `${name}: `);
-	add(label("Launch") + safeText(snapshot.launchPath));
-	let active = label("Active") + safeText(snapshot.activePath);
+	add(label("Launch") + pathText(snapshot.launchPath));
+	let active = label("Active") + pathText(snapshot.activePath);
 	const git = snapshot.workspace?.git;
 	if (git?.kind === "repository") active += ` · ${checkout(git.active, theme)}`;
 	else active += theme.fg("dim", git?.kind === "none" ? " · Not a Git repository" : git?.kind === "unknown" ? ` · Git unavailable (${safeText(git.reason)})` : " · Git pending");
 	add(active);
 	if (git?.kind === "repository") {
-		if (git.main && git.main.path !== git.active.path) add(label("Main") + safeText(git.main.path) + ` · ${checkout(git.main, theme)}`);
+		if (git.main && git.main.path !== git.active.path) add(label("Main") + pathText(git.main.path) + ` · ${checkout(git.main, theme)}`);
 		else if (git.mainUnavailableReason) add(label("Main") + theme.fg("warning", `unavailable (${safeText(git.mainUnavailableReason)})`));
 	}
 	const github = snapshot.workspace?.github;
 	if (github?.kind === "repository") {
 		const pr = snapshot.pullRequest;
-		const prText = pr.kind === "open" ? `PR #${pr.number} ${safeText(pr.url)}` : pr.kind === "none" ? "No open PR" : pr.kind === "unavailable" ? `PR unavailable (${safeText(pr.reason)})` : "PR not applicable";
-		add(label("GitHub") + `${safeText(github.name)} ${safeText(github.url)} · ${prText}`);
+		const prText = pr.kind === "open" ? ` · PR #${pr.number} ${safeText(pr.url)}` : pr.kind === "unavailable" ? ` · PR unavailable (${safeText(pr.reason)})` : "";
+		add(label("GitHub") + safeText(github.name) + prText);
 	} else if (github?.kind === "none") add(theme.fg("dim", "No GitHub remote"));
 	else add(theme.fg("warning", github?.kind === "unknown" ? `GitHub unavailable (${safeText(github.reason)})` : "GitHub pending"));
 	const usage = snapshot.contextUsage;

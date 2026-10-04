@@ -42,7 +42,12 @@ async function fixtures(t: any) {
 		runGit(cwd, ["init", "-b", "release"]);
 		runGit(cwd, ["commit", "--allow-empty", "-m", "fixture"]);
 	}
-	t.after(async () => { process.env = saved; await rm(root, { recursive: true, force: true }); });
+	t.after(async () => {
+		// Preserve Node's native environment object so os.homedir sees later HOME changes.
+		for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+		Object.assign(process.env, saved);
+		await rm(root, { recursive: true, force: true });
+	});
 	const count = async (path: string) => { try { return (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).length; } catch { return 0; } };
 	return { root, launch, plain, repo, second, runGit, gitLog, ghLog, count };
 }
@@ -105,6 +110,18 @@ test("real loader registration; display-only signal, invalid paths, aborted call
 	assert.deepEqual(h.errors, []);
 });
 
+test("real host supplies home for display without changing absolute selection details", async (t) => {
+	const f = await fixtures(t);
+	process.env.HOME = f.root;
+	const manager = host.SessionManager.inMemory(f.launch);
+	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
+	assert.match(h.text(), /Launch: ~\/launch/);
+	const result = await h.select(f.plain);
+	assert.match(h.text(), /Active: ~\/plain ü/);
+	assert.equal(result.details.path, f.plain);
+	assert.equal(manager.getCwd(), f.launch);
+});
+
 test("tree restoration follows branch; reload/resume and fork restore; new session resets", async (t) => {
 	const f = await fixtures(t);
 	const manager = host.SessionManager.create(f.launch, join(f.root, "sessions"));
@@ -163,7 +180,7 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release · clean/.test(h.text()) && /No open PR/.test(h.text()));
+	await until(() => /release · clean/.test(h.text()) && /^GitHub: fixture\/status-bar$/m.test(h.text()));
 	assert.equal(await f.count(f.ghLog), 1);
 	assert.deepEqual(h.errors, []);
 });

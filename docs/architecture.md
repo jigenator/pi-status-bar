@@ -22,12 +22,12 @@ flowchart LR
 | `package.json` | Pi package metadata and test wiring | `pi.extensions[0]` → `src/extension.ts` | Host-provided peer packages |
 | `src/extension.ts` | Pi adapter: tool, session state, restoration, refresh/cache, cancellation, footer lifecycle | Default extension factory | Public Pi/TypeBox APIs, workspace functions, footer renderer |
 | `src/workspace.ts` | Path normalization and truthful local Git/GitHub/PR inspection | `resolveActivePath`, `inspectWorkspace`, `inspectPullRequest` and result types | Node filesystem/path/child-process only |
-| `src/footer.ts` | Pure, theme-aware, width-safe, terminal-safe rendering | `renderFooter`, `safeText`, `FooterSnapshot` | Pi types, Pi TUI width helpers, workspace types only |
+| `src/footer.ts` | Pure, theme-aware, width-safe, terminal-safe rendering | `renderFooter`, `safeText`, `FooterSnapshot` | Node path helpers, Pi types/TUI width helpers, workspace types only |
 | `test/workspace.test.ts` | Domain/contract coverage | Node test file | Disposable Git repositories and fake executables |
 | `test/footer.test.ts` | Renderer coverage | Node test file | Installed host TUI through Jiti |
 | `test/extension.test.ts` | Package/host/lifecycle integration | Node test file | Real installed Pi loader/runtime, disposable fixtures, fake `gh` |
 
-The reusable domain module never depends on UI/process-exit/session state. The renderer never performs I/O. The Pi adapter owns all orchestration and does not duplicate Git/PR parsing or presentation rules.
+The reusable domain module never depends on UI/process-exit/session state. The adapter supplies the home directory in `FooterSnapshot` for display abbreviation; the renderer never reads it from the environment or performs I/O. The Pi adapter owns all orchestration and does not duplicate Git/PR parsing or presentation rules.
 
 ## Representative flows
 

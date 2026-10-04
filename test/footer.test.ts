@@ -13,6 +13,7 @@ const { renderFooter, safeText } = await jiti.import(resolve("src/footer.ts"));
 const { visibleWidth } = await import(pathToFileURL(require.resolve("@earendil-works/pi-tui")).href);
 const plainTheme = { fg: (_color: string, text: string) => text };
 const fixture = (): FooterSnapshot => ({
+	homePath: "/home/example",
 	launchPath: "/launch unrelated",
 	activePath: "/repo/worktree",
 	workspace: {
@@ -32,10 +33,34 @@ test("wide snapshot includes only the active repository's main checkout and all 
 		"Launch: /launch unrelated",
 		"Active: /repo/worktree · feature/ui · modified",
 		"Main: /repo · release · clean",
-		"GitHub: owner/repo https://github.com/owner/repo · PR #42 https://github.com/owner/repo/pull/42",
+		"GitHub: owner/repo · PR #42 https://github.com/owner/repo/pull/42",
 		"Context: 25.0%/128k" + " ".repeat(100 - 19 - 30) + "provider/model · thinking high",
 		"Other status\x1b[0m", "Ponytail: ready\x1b[0m",
 	]);
+});
+
+test("home abbreviation applies to all directory rows, not similar prefixes or stored values", () => {
+	const f = fixture();
+	f.launchPath = f.homePath;
+	f.activePath = `${f.homePath}/worktrees/feature`;
+	if (f.workspace?.git.kind !== "repository") throw new Error("fixture");
+	f.workspace.path = f.activePath;
+	f.workspace.git.active.path = f.activePath;
+	f.workspace.git.main!.path = `${f.homePath}/Projects/repo`;
+	f.pullRequest = { kind: "none" };
+	const before = structuredClone(f);
+	const lines = renderFooter(f, 160, plainTheme);
+	assert.equal(lines[0], "Launch: ~");
+	assert.equal(lines[1], "Active: ~/worktrees/feature · feature/ui · modified");
+	assert.equal(lines[2], "Main: ~/Projects/repo · release · clean");
+	assert.equal(lines[3], "GitHub: owner/repo");
+	assert.deepEqual(f, before, "display shortening must not change stored paths or URLs");
+	for (const path of ["/home/example-other/repo", "/home", "/elsewhere/repo"]) {
+		f.launchPath = path;
+		assert.equal(renderFooter(f, 160, plainTheme)[0], `Launch: ${path}`);
+	}
+	f.homePath = "/"; f.launchPath = "/project";
+	assert.equal(renderFooter(f, 160, plainTheme)[0], "Launch: ~/project");
 });
 
 test("truthful none, unknown, unborn/detached, missing main and PR states", () => {
@@ -52,11 +77,12 @@ test("truthful none, unknown, unborn/detached, missing main and PR states", () =
 	f.workspace.git.active = { path: f.activePath, branch: null, revision: null, dirty: null, error: "timeout" };
 	f.workspace.git.main = null; f.workspace.git.mainUnavailableReason = "pruned";
 	for (const [pr, expected] of [
-		[{ kind: "none" }, "No open PR"], [{ kind: "unavailable", reason: "auth missing" }, "PR unavailable (auth missing)"], [{ kind: "not-applicable" }, "PR not applicable"],
+		[{ kind: "none" }, "GitHub: owner/repo"], [{ kind: "unavailable", reason: "auth missing" }, "GitHub: owner/repo · PR unavailable (auth missing)"], [{ kind: "not-applicable" }, "GitHub: owner/repo"],
 	] as const) {
 		f.pullRequest = pr;
 		output = renderFooter(f, 200, plainTheme).join("\n");
-		assert.ok(output.includes(expected)); assert.match(output, /detached · status unavailable \(timeout\)/); assert.match(output, /Main: unavailable \(pruned\)/);
+		assert.ok(output.split("\n").includes(expected)); assert.doesNotMatch(output, /No open PR|PR not applicable/);
+		assert.match(output, /detached · status unavailable \(timeout\)/); assert.match(output, /Main: unavailable \(pruned\)/);
 	}
 	f.workspace.git.active.branch = "main"; f.workspace.git.active.revision = null;
 	f.workspace.git.main = f.workspace.git.active; delete f.workspace.git.mainUnavailableReason;

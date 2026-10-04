@@ -19,6 +19,8 @@ Rows appear in this order:
 5. Context usage and current model/thinking.
 6. One row per other extension status.
 
+Launch, Active, and Main abbreviate the home directory as `~`, including the home directory itself; similarly named sibling directories remain absolute. GitHub shows only `owner/repository`, without repeating its repository URL. PR numbers/URLs appear when an open PR is found; confirmed absence and not-applicable states have no PR suffix or trailing separator. Lookup failures still show an unavailable warning. These are display transformations only; stored paths and lookup URLs stay absolute/full.
+
 Semantic host theme colors communicate dim metadata, success, warning, and error. Content wraps rather than disappearing at narrow widths. The renderer reads model, thinking, context, and extension statuses each frame so those values stay current.
 
 ## Accessibility and platform behavior
@@ -37,7 +39,7 @@ Paths, branches, URLs, errors, and status content are treated as untrusted termi
 | Linked worktree | Active checkout and distinct repository-primary checkout each show their own branch/status |
 | Detached or unborn checkout | Detached revision when available, or branch with no revision; never fabricate a branch |
 | Open PR | Repository and validated PR number/URL |
-| No open PR | Explicit `No open PR` only after a successful lookup |
+| No open PR or PR not applicable | Repository name only; omit the PR field and separator |
 | Integration failure | Explicit Git/GitHub/PR unavailable reason; no success-shaped fallback |
 | Non-TUI mode | Tool and state lifecycle continue; no footer component is installed |
 
