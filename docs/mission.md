@@ -14,6 +14,7 @@ Goals:
 - Show active and repository-primary checkout Git state without confusing the launch directory for the primary checkout.
 - Distinguish absence from unavailable/unknown Git and GitHub information.
 - Preserve current context, model, thinking level, and every other extension status.
+- Show root working state independently from optional native Active Units (AU), including queued work/workflow containers without claiming an exact running-agent count.
 - Remain readable across terminal widths and safe for untrusted repository/path text.
 - Refresh external changes without doing local or network I/O during rendering.
 - Present this in the selected Acid / Black instrument-panel design, whose decorative motion never changes or delays displayed values and can be turned off per session.
@@ -31,7 +32,7 @@ Success is represented by deterministic coverage of the workspace, renderer, and
 ## Constraints
 
 - The runtime uses Node.js standard library plus host-provided Pi, Pi TUI, and TypeBox peers; no bundled runtime dependencies.
-- Local Git and `gh` operations are read-only, bounded, cancellable, and outside render. Decoration timers only request repaints.
+- Local Git and `gh` operations are read-only, bounded, cancellable, and outside render. Decoration timers only advance pure motion memory and request repaints; optional public fleet requests are independently bounded and disposed.
 - Active selection is session-local and follows the selected session branch; it must not leak to a new session.
 - Missing tools, auth, network, checkout metadata, or malformed external responses remain visible as unavailable states.
 - The extension must continue to work in non-TUI Pi modes even though no footer is installed.

@@ -6,7 +6,7 @@ The footer is for people supervising a Pi session that may cross repositories or
 
 The desired tone is factual and compact. Unknowns and failures are named; the interface never reassures with “clean” or “no open PR” when a lookup failed. The anti-goal is a dashboard with controls or cumulative usage/cost detail.
 
-The visual language is the selected Marathon-inspired “01 — Acid / Black” footer from Terminal Lab: a framed instrument panel with solid numbered label plates, a graduated context gauge, a wide-only context numeral, a model band, and decorative frame motion. Its source composition is <https://artifacts.tatsu.systems/p46a7imypz3p/v1>; <https://artifacts.tatsu.systems/q8450ndbquez/v2> supplies the palette and two approved refinements (parent/current paths and no tabs below plates).
+The visual language is the selected Marathon-inspired “01 — Acid / Black” footer from Terminal Lab: a framed instrument panel with solid numbered label plates, a graduated context gauge, a wide-only context numeral, a model band, and decorative frame motion. Native v9 retains the selected Acid / Black palette and parent/current paths, with padded numbered plates, a tick-free scale and Thread Rail activity. The browser prototype is a visual reference, not production telemetry or a fixed-size terminal layout.
 
 ## Interaction and visual language
 
@@ -14,18 +14,22 @@ The visual language is the selected Marathon-inspired “01 — Acid / Black” 
 
 `/footer-motion [on|off]` is the only user control. An empty argument toggles. It settles or resumes decoration for the current session only, is not persisted, and never freezes live values.
 
-The frame's top rule carries GitHub: `GITHUB owner/repository`, then any open PR number and URL or a PR unavailable reason. GitHub pending/unavailable states are named there. When no GitHub remote exists, the rule has no title rather than a GitHub status. Rows then appear in this order:
+The header carries GitHub: `GITHUB owner/repository`, then any open PR number and URL or a PR unavailable reason. GitHub pending/unavailable states are named there. When no GitHub remote exists, the header has no GitHub title rather than a GitHub status. Rows then appear in this order:
 
-1. `01 LAUNCH` path.
-2. `02 ACTIVE` path, with branch and clean/modified/unavailable chips, Git pending, or Git unavailable; no Git suffix for a plain directory.
-3. `02.1 MAIN` only when the repository's primary checkout is distinct, or when it is unavailable.
-4. `03 CTX USED` graduated gauge, readout, and WARN/HIGH/UNKNOWN tag; at 100+ columns a calibration scale and three-row numeral sit beside the Active/Main/context block.
-5. `04 MODEL` provider/model and thinking level on the model band.
-6. `05 EXT` plus one or more rows for every other extension status, verbatim and sorted by status key.
+1. ` 01 LDR ` path.
+2. ` 02 ACT ` path, with branch and clean/modified/unavailable chips, Git pending, or Git unavailable; no Git suffix for a plain directory.
+3. ` 2.1 MN ` only when the repository's primary checkout is distinct, or when it is unavailable.
+4. ` 03 CTX ` gauge with protected inline readout and WARN/HIGH/UNKNOWN tag; at 100+ columns, when content fits, a tick-free number scale and three-row numeral sit beside the Active/Main/context block.
+5. ` 04 MDL ` provider/model and thinking level on the model band.
+6. ` 05 EXT ` plus one or more rows for every other extension status, verbatim and sorted by status key.
 
 Launch, Active, and Main show only the immediate parent and current directory, for example `Projects/pi-status-bar`. Home itself is `~` and a direct child of home is `~/name`. Root, a single component, and two-component paths are shown in full because nothing would be elided; relative values are shown as given. GitHub shows only `owner/repository`, without repeating its repository URL. PR numbers/URLs appear when an open PR is found; confirmed absence and not-applicable states have no PR suffix. These are display transformations only; stored paths and lookup URLs stay absolute/full. Distinct paths can share the same parent/current display; that ancestry loss is the approved trade-off.
 
-Layouts respond to width: 100+ columns is wide (numeral and scale), 60–99 compact (`0▕…▏100` gauge ends), and 40–59 narrow (unnumbered 8-column plates; the readout moves under the gauge when needed). Below 40 columns the frame cannot fit, so a minimal fallback keeps every field as inline plate labels with wrapped values. Values wrap rather than truncate. Continuation rows leave the plate column as plain field: there are no colored tabs or stubs below plates. Frame corners remain on the header and final row, with side stubs on the first and penultimate rows.
+Layouts respond to width: 100+ columns may show the large context numeral; 40–99 columns keep the padded eight-cell numbered plates and use a compact gauge. The track's inline readout has one real blank cell on each side, including Unknown. The number scale retains as many labels (`0 10 … 70 … 90 100`) as fit without ruler ticks. Below 40 columns a minimal fallback keeps every field with wrapped inline labels. Values wrap rather than truncate. Continuation rows leave the plate column plain, without colored tabs. Corners and side stubs remain; there is no continuous top rule.
+
+The header's Thread Rail has a full-cell root lamp, blank separator, bright `ROOT` panel, up to six unit marks and an exact **AU (Active Units)** badge. ROOT's right edge aligns with the wide context divider and the badge's left background edge with context captions when anchors fit; otherwise activity right-aligns with corner clearance or wraps to its own row. Counts 0–99/Unknown use a seven-cell right-aligned badge (`  3 AU `, ` 12 AU `, `  ? AU `); 100+ widens it. Rail marks yield first at tight widths, then activity moves to its own row. Neither title nor total is clipped to preserve decoration.
+
+ROOT reflects the root session's public `isIdle()` state, independently of AU. AU is the optional pi-subagents native active-work total, including queued/pending items and a workflow container as one; it is not a count of exactly running agents. Unknown data is `? AU`, distinct from confirmed `0 AU`. Native adapter snapshots always supply root state; a renderer used without activity has a static hatched unknown lamp. ROOT stays bright even while Idle.
 
 ## Palette and context semantics
 
@@ -35,9 +39,11 @@ Context is read from the host on every render. Gauge cells cover 0–100%, and a
 
 ## Motion
 
-Motion is decoration only. At a 50 ms tick, the header rule draws in and plates wipe in after the footer is installed; the rule's comb drifts every 400 ms and the center `┼` calibration mark nudges once every 6 s. When the real context tone changes, the context plate wipes from the previous tone and the tag flashes; when the real value crosses 70 or 90, that mark flashes. Readouts, fills, tags, and numerals always show the current value in every frame: the gallery's synthetic ratchet and dither transitions are not used.
+Motion is decoration only. A supplied-time/seed plan provides varied boot treatments across actual paths, title, chips, model, statuses and context readout. Corners draw in and the standalone center `┼` makes a small calibration nudge once every six seconds. Boot never masks ROOT/AU. Current large context digits reconstruct square by square from grey/current color; old-only pixels clear immediately and target geometry updates immediately (**new shape only**, not the browser's old-to-new retained-pixel morph). The exact small readout and graphical fill are immediate, even through rapid retargeting or Unknown transitions.
 
-The extension repaints only when the next frame differs. With motion on, a settled footer repaints about three times per second; transients repaint at up to 20 frames per second for at most 1.5 s. `/footer-motion off` settles the decoration immediately.
+Fresh re-strike plans start every 4–6 seconds start-to-start. Whole-plan shuffling lets ROOT or AU lead or follow other plates/numeral/caption patches; each panel is selected independently about half the time. Re-strikes affect backgrounds, lettering colors and padding without changing characters/current digit occupancy. Ghosts have a separate A+B duration plus 2.2–4.2 second wait; fill glitches affect only the currently filled track. Readout including padding, unfilled/Unknown gauge, all activity cells during ghosts, other extensions' styled content, lamp/separators/unit marks/gaps during re-strikes remain protected. Plans resolve against current geometry and eventually recover fully.
+
+Working lamp cadence is 500 ms acid / 300 ms dim; Idle is static dim. Ambient plans run in both Working and Idle, without focus gating. The adapter owns one bounded, unref'd decoration timeout, with 50 ms transient granularity and renderer-selected sleeps, never a free-running interval or data collector. `/footer-motion off` settles all motion immediately but preserves live ROOT/AU, context/model/statuses and Git/PR updates. Resuming starts fresh without catch-up. No v9 render-cost or full-host repaint-performance measurement is claimed.
 
 ## Accessibility and platform behavior
 
@@ -51,18 +57,18 @@ Paths, branches, URLs, errors, and status content are treated as untrusted termi
 | --- | --- |
 | Initial/local refresh | Active remains visible with Git pending and GitHub pending until a snapshot arrives |
 | Plain directory | Paths only; omit Git absence text and the GitHub title |
-| Git repository without GitHub | Branch plus clean/modified/unavailable chip; untitled frame rule |
-| Linked worktree | Active checkout and distinct `02.1 MAIN` primary checkout each show their own branch/status |
+| Git repository without GitHub | Branch plus clean/modified/unavailable chip; untitled header |
+| Linked worktree | Active checkout and distinct ` 2.1 MN ` primary checkout each show their own branch/status |
 | Detached or unborn checkout | Detached revision when available, or branch with no revision; never fabricate a branch |
 | Open PR | Repository and validated PR number/URL in the frame title |
 | No open PR or PR not applicable | Repository name only; omit the PR field and separator |
 | Integration failure | Explicit Git/GitHub/PR unavailable reason; no success-shaped fallback |
 | Context 0 / warning / high / unknown | Empty gauge / amber plate and `▲ WARN` / red plate and `▲ HIGH` / grey plate, hatch and `? UNKNOWN` |
 | Motion off | Settled frame; live values continue to update |
-| Non-TUI mode | Tool, state, and motion command continue; no footer component or animation timer is installed |
+| Non-TUI mode | Tool, state, and motion command continue; no footer, decoration timer or fleet collector is installed |
 
 ## Verification and open questions
 
 Automated checks cover the selected palette and layouts, snapshots at 100/72/48/30 columns, semantic states, context thresholds and invalid values, Unicode widths 1–160 in every state and motion frame, field preservation, absent continuation tabs, terminal-control sanitization, live host values/statuses, motion frames and scheduling, the motion command, timer disposal, real package loading, selection failure, session tree/reload/resume/fork behavior, polling/TTL, cancellation, and disposal.
 
-Not yet verified: subjective rendering and motion in a live interactive terminal, 256-color fidelity on real terminals, Windows behavior, and a real authenticated GitHub response. There is no open design proposal to automate Active; revisit only if explicit signaling proves unreliable and a trustworthy non-incidental signal becomes available.
+Not yet verified: subjective rendering and motion in a live interactive terminal, 256-color fidelity on real terminals, Windows behavior, live fleet-owner activity, and a real authenticated GitHub response. Lifecycle tests use the real installed Pi loader/bus with offline, asynchronous fleet replies and errors/timeouts. There is no open design proposal to automate Active; revisit only if explicit signaling proves unreliable and a trustworthy non-incidental signal becomes available.

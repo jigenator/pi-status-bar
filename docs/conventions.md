@@ -4,7 +4,7 @@
 
 Pi Status Bar is a TypeScript ESM Pi package for Node.js 22.19+. Runtime code is `src/extension.ts`, `src/footer.ts`, and `src/workspace.ts`; Pi supplies the host, TUI, and TypeBox peers declared in `package.json`. Tests use Node's built-in runner and TypeScript stripping.
 
-Scope reviewed: baseline revision `60d738faa2b2264005717e599c4a917f69c59419`, the complete integrated source/test tree, `package.json`, and installed Pi 1.0.2 package/extension/TUI APIs on 2026-10-04. The installed host was read-only. This is a focused review of the complete current repository, not a claim about other Pi versions or platforms.
+Scope reviewed: baseline revision `60d738faa2b2264005717e599c4a917f69c59419`, the complete integrated source/test tree, `package.json`, and installed Pi 1.0.2 package/extension/TUI APIs and pi-subagents 0.76.0 public activity contract (native v9 integration on 2026-10-05). The installed host was read-only. This is a focused review of the complete current repository, not a claim about other Pi versions or platforms.
 
 ### Baseline discovery and conversion
 
@@ -53,7 +53,7 @@ Public compatibility currently consists of the package entry, tool name/schema/d
 
 **Rule:** represent absence, unknown/unavailable, and success as discriminated unions; nullable checkout fields keep their documented meaning. **Example:** `dirty: null` means unavailable and can never mean clean; PR `none` is distinct from `unavailable`. **Reason:** static types and UI text must prevent false reassurance. **Check:** workspace and footer tests assert every state.
 
-**Rule:** validate untrusted data at runtime even when typed. **Example:** GitHub remote URLs and `gh` JSON fields are checked for repository identity, branch, number, state, URL, ambiguity, truncation, and control characters. Tool paths must be non-empty existing directories and are canonicalized. **Reason:** subprocess and tool inputs cross runtime boundaries. **Check:** malformed/spoofed/hostile fixtures in all three test files.
+**Rule:** validate untrusted data at runtime even when typed. Optional fleet RPC must validate protocol, request identity, same-session capability, fleet version and safe nonnegative counts; failure is null/Unknown, never zero. Counts come from the authoritative total, not the bounded entries window. **Example:** GitHub remote URLs and `gh` JSON fields are checked for repository identity, branch, number, state, URL, ambiguity, truncation, and control characters. Tool paths must be non-empty existing directories and are canonicalized. **Reason:** subprocess and tool inputs cross runtime boundaries. **Check:** malformed/spoofed/hostile fixtures in all three test files.
 
 Use TypeBox only at the Pi tool schema boundary. Do not serialize hidden credentials or raw command stderr into results.
 
@@ -67,7 +67,7 @@ Invalid `set_active_project` calls throw and preserve the previous selection. Un
 
 **Rule:** subprocess I/O belongs only in `src/workspace.ts` and uses `execFile` with explicit argv/cwd, sanitized environment, output limits, timeouts, and cancellation. Local Git is read-only with optional locks/lazy fetch disabled. `gh api` is an explicit read-only GET. **Check:** command-argument/environment tests and real disposable Git fixtures.
 
-**Rule:** session state belongs in the `SessionState` owned by `src/extension.ts`. Selection changes cancel prior local/PR work; every async completion verifies session/controller/path/key ownership. Timers and controllers are disposed on shutdown/footer disposal. **Check:** stale-selection, disposal, and polling tests.
+**Rule:** session state belongs in the `SessionState` owned by `src/extension.ts`. Selection changes cancel prior local/PR work; every async completion verifies session/controller/path/key ownership. Timers, controllers, public RPC reply/ready listeners and in-flight ownership are disposed on shutdown/footer disposal. A reply listener and bounded timeout must exist before emit; Pi event-bus emission does not await async handler completion. **Check:** stale-selection, disposal, and polling tests.
 
 Successful selection details are stored in the Pi session branch and restored on tree/reload/resume/fork. There is no database, transaction, cross-session storage, schema migration, retry loop, or write-side idempotency requirement. If the versioned selection detail shape changes, support only a concrete compatibility need and test migration/recovery before changing `version: 1`.
 
@@ -91,7 +91,7 @@ A new dependency requires a current need, comparison with stdlib/host APIs, main
 
 ## Performance and growth
 
-Current bounded behavior: decoration repaints only when its frame changes (about three times per second when settled, up to 20 per second for at most 1.5 s of transients, none when `/footer-motion off`); a footer render measured about 0.3–0.6 ms at 48–160 columns on the 2026-10-04 baseline machine; local status refreshes after tool completion and every 15 seconds in TUI mode; PR results cache for 60 seconds by repository URL/name and branch; Git commands time out after 4 seconds, `gh` after 10 seconds, and subprocess output is capped at 1 MiB. Rendering performs no I/O and line output is width-bounded.
+Current bounded behavior: one unref'd decoration timeout, renderer-selected next wake with 50 ms transient granularity, none when `/footer-motion off`; independent fleet collection normally five seconds after completion, coalesced event refreshes with a one-second minimum start-to-start interval, one local RPC outstanding and a two-second timeout per request. The owner may use artifact-backed fallback status; client timeout cannot cancel that work. Root state is read from `isIdle()`, not inferred from event names or child count. Local status refreshes after tool completion and every 15 seconds in TUI mode; PR results cache for 60 seconds by repository URL/name and branch. Git commands time out after 4 seconds, `gh` after 10 seconds, and subprocess output is capped at 1 MiB. Rendering and decoration wakes perform no collection I/O and line output is width-bounded. Baseline pre-v9 render timings and settled repaint rates do not establish v9 performance; no new render-cost/full-host measurement is claimed.
 
 No production workload or measured bottleneck exists. Treat suspected redraw, process-count, or large-repository cost as a measurement task before adding watchers, workers, services, persistence, or another cache. Revisit intervals only with observed latency/load data and lifecycle tests.
 
@@ -101,6 +101,7 @@ No production workload or measured bottleneck exists. Treat suspected redraw, pr
 | --- | --- | --- | --- |
 | No standalone static typecheck, formatter, linter, build, or CI gate | Medium; current checks are runtime tests and syntax stripping | Evaluate the smallest tool only when maintainers approve dependency/tooling expansion | Proposed check—not implemented; do not claim these gates today |
 | No manual live interactive-terminal/motion review | Medium for presentation; automated palette, width and motion checks pass | Exercise the unpackaged local extension at representative widths and color modes without changing user settings | Manual check—not run |
+| No live fleet-owner smoke test | Medium; real Pi loader/event bus with deterministic offline replies is covered | Opt-in read-only observation with a separately authorized live owner; do not launch agents just to test | Manual check—not run |
 | No live authenticated GitHub validation | Low for deterministic correctness; API boundary is mocked and validated | Run a read-only opt-in smoke against a controlled public repository if explicitly authorized | Opt-in check—not implemented; normal suite remains offline |
 | Agent can forget to update Active | Product limitation inherent in explicit signaling | Collect evidence before changing the decision; do not infer from incidental reads | Revisit condition in the decision record |
 | Windows execution is untested | Unknown relevance; implementation uses platform APIs but POSIX fixtures | Add platform CI only when Windows support is required | Proposed check—not implemented |

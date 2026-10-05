@@ -1,7 +1,7 @@
 # Architecture
 
 Status: current integrated system; no proposed runtime modules.
-Evidence: baseline `60d738faa2b2264005717e599c4a917f69c59419`, all `src/` and `test/` files, `package.json`, and installed Pi 1.0.2 public loader/runtime APIs inspected on 2026-10-04.
+Evidence: current `src/` and `test/` files, `package.json`, installed Pi 1.0.2 and pi-subagents 0.76.0 public contracts inspected for the native v9 integration on 2026-10-05.
 
 ## System and module map
 
@@ -10,7 +10,8 @@ flowchart LR
   Host[Pi host] -->|loads package entry and emits lifecycle events| Extension[src/extension.ts]
   Extension -->|calls path, Git and PR contract| Workspace[src/workspace.ts]
   Extension -->|passes snapshots for pure rendering| Footer[src/footer.ts]
-  Host -->|context, model, thinking and extension statuses| Extension
+  Host -->|context, model, thinking, isIdle and extension statuses| Extension
+  Extension <-->|public ping/status RPC, outside render| Fleet[Optional pi-subagents owner]
   Workspace -->|read-only filesystem and execFile| Local[Filesystem and Git]
   Workspace -->|bounded read-only gh api| GitHub[GitHub via gh]
   Footer -->|color conversion and width utilities| TUI[Pi TUI]
@@ -59,9 +60,21 @@ Local inspection runs after tool completion and on a 15-second TUI timer. PR loo
 
 ### Decorative motion
 
-The installed TUI footer owns one `MotionState` and at most one unref'd timeout. Each render records context tone changes and 70/90 crossings with `observeContext`, then passes `motionFrame(state, now)` to `renderFooter`. Values and fill come from the current snapshot, not from the motion state. `nextMotionDelay` returns the time until the next visible decoration step: one 50 ms tick during boot, wipes, and flashes, otherwise the next comb or calibration step, which is at most 400 ms away. The timeout requests a render only when that frame differs from the last rendered frame, then reschedules.
+The installed TUI footer owns one `MotionState` and at most one unref'd decoration timeout. The adapter supplies monotonic `performance.now()` time and a fresh cryptographic 32-bit seed to `startMotion(snapshot, now, seed, boot)`. Each render builds a fresh snapshot, calls `advanceMotion`, then projects `motionFrame`. `nextMotionDelay` schedules the next decoration step, preserving an already-earlier wake. A wake advances state against the last rendered snapshot before repainting/rearming; the ensuing render observes current host values. The wake performs no telemetry collection. Plans are generated once per event, not per frame; late wakes do not run an unbounded catch-up loop.
 
-`/footer-motion` sets a session-local flag that survives same-session tree restore and resets for a new session or extension reload. Turning motion off clears the timeout and renders the settled frame. Footer replacement, tree restore, and shutdown dispose the timeout through `stopWork`. Non-TUI modes register the command but install no footer or timer. The animation path never calls workspace inspection.
+`/footer-motion` sets a session-local flag that survives same-session tree restore and resets for a new session or extension reload. Off clears the decoration timeout and renders the settled frame; on restarts with a fresh seed and current snapshot without replaying boot or accumulated off-time changes. Git/PR and activity collection continue independently. Replacement, tree restore and shutdown dispose owned work; stale components cannot stop replacements. Non-TUI modes install neither a footer nor display-only fleet collection.
+
+### ROOT and optional fleet activity
+
+`FooterSnapshot.activity` is always supplied by the adapter: `{ working: !ctx.isIdle(), units: number | null }`. Root state is sampled on every render, with explicit repaints on `agent_start`, `agent_end`, and `agent_settled`. `agent_end` is not final settlement: Pi may retry, compact or continue; it clears run-active before delivering `agent_settled`. Never infer ROOT from tools or AU.
+
+A footer-owned collector uses public `subagents:rpc:v1:request`, `subagents:rpc:v1:reply:<requestId>` and `subagents:rpc:v1:ready` channels directly, without importing the optional package. Each collection checks `ping` protocol version, current session ID, and `capabilities.fleetStatus.version === 1`, then requests untargeted `status`. It validates reply envelope/version/request ID/optional method/success, fleet version, safe nonnegative integer `totalActive` and `omitted`, and entry-window consistency. Unknown fields are ignored; entries are not counted as the total. Missing owner, unsupported capability, errors, invalid data and timeout publish null (`? AU`). Exact zero requires a valid successful sample.
+
+Only one request is outstanding locally. Each reply listener and its unref'd two-second timeout are installed before emit, and removed on completion/cancellation. Pi's event bus invokes handlers but does not await their asynchronous completion. Normal collection is five seconds after completion; lifecycle/tool/ready requests coalesce with 250 ms delay and a minimum one-second start-to-start interval. A burst during collection produces at most one deferred refresh. A valid same-session ready notification cancels a predecessor's pending reply and invalidates its sample. Session/component identity and unique request IDs reject stale replies; tree/new-session/footer replacement/shutdown clear polling, reply and ready listeners. There is no per-frame RPC, Git or GitHub work.
+
+AU means **Active Units**, the owner's native active-work total: running, queued/pending items and workflow containers (one per workflow), not an exact running-agent count. The public entry window is bounded but the total is not capped. This is process-local/current-owner data, not a cross-process fleet inventory. The owner normally serves restored in-memory projections; missing/stale/unrestored projections fall back to its executor-backed status, which can read artifacts. Ready follows synchronous session reset/restore, but does not guarantee every restoration succeeded. The footer trusts validated public DTOs and does not scrape private state. Timeout detaches the client; the public protocol has no request cancellation, so it cannot abort work already executing in the optional owner. Last successful data stays visible during a bounded refresh, then becomes Unknown on failure. No instantaneous/background-event-complete freshness guarantee is claimed.
+
+Contract sources in the installed packages: Pi `docs/extensions.md`, `dist/core/event-bus.{d.ts,js}`, `dist/core/agent-session.js` and `dist/core/extensions/runner.js`; pi-subagents `docs/extension-api.md`, `src/extension/rpc.{d.ts,js}`, `src/extension/index.js` and `src/runs/background/async-job-tracker.js`. Production uses only Pi public imports and the documented event contract.
 
 ### Active selection and failure behavior
 
@@ -71,7 +84,7 @@ Invalid paths, resolution failures, cancellation, or session replacement throw w
 
 ## Data and contracts
 
-`SessionState` in `src/extension.ts` is authoritative only for the live session: Launch, Active, selection generation, latest workspace/PR snapshots, PR cache, controllers, refresh timer, render callback, motion flag, and footer animation. It is recreated on session start/tree events and disposed on shutdown. A same-session tree restore retains its PR cache and motion choice; a new session receives a new cache, motion on, and Active at Launch.
+`SessionState` in `src/extension.ts` is authoritative only for the live session: Launch, Active, selection generation, latest workspace/PR snapshots, PR cache, controllers, refresh timer, render callback, motion flag, footer animation, optional fleet collector and nullable AU sample. It is recreated on session start/tree events and disposed on shutdown. A same-session tree restore retains its PR cache and motion choice; a new session receives a new cache, motion on, and Active at Launch.
 
 Durable selection data lives only in successful `set_active_project` tool-result details on the selected Pi session branch. Restoration scans that branch, so abandoned history does not leak into navigation. There is no project/global settings write or cross-session database.
 
@@ -91,7 +104,7 @@ The workspace contract uses discriminated unions:
 | The primary checkout belongs to Active's repository and is not inferred from Launch | `inspectWorkspace` in `src/workspace.ts` | Linked/missing/replaced-main tests |
 | External errors never become clean/no-PR and raw stderr is not exposed | `command`, `checkout`, `inspectPullRequest` | Failure/redaction tests plus renderer state tests |
 | Rendering performs no I/O and every line fits width | `renderFooter` in `src/footer.ts` | Widths 1–160 in every state/motion frame and pure snapshot tests |
-| Decoration never changes or delays displayed data and never starts inspection | motion functions in `src/footer.ts`, animation in `src/extension.ts` | Frame-equality, schedule, command, timer-disposal and no-extra-I/O tests |
+| Decoration never changes or delays displayed data and never starts collection | motion functions in `src/footer.ts`, animation and independent collector in `src/extension.ts` | Frame-equality, schedule, command, timer-disposal and no-extra-I/O tests |
 | Untrusted terminal text cannot inject controls; other statuses keep SGR styles | `safeText` in `src/footer.ts` | Hostile-control renderer test |
 | Branch/workspace switches and shutdown cannot accept stale async completions | refresh ownership checks in `src/extension.ts` | Stale work/disposal tests |
 | GitHub network work is rate-limited by repository and branch | `refreshPR` cache/key in `src/extension.ts` | TTL/switch integration test |
@@ -111,9 +124,9 @@ A new footer-only presentation state belongs in `src/footer.ts` and must use a s
 - Public GitHub URL forms are supported; GitHub Enterprise/arbitrary SSH aliases and outbound fork-to-upstream discovery are not inferred. Add them only from explicit requirements with unambiguous identity rules.
 - Local Git reads form a non-atomic snapshot during concurrent repository changes. A full transaction is not available; failures remain visible.
 - Active can be stale when the agent omits the explicit signal. This is a product trade-off, not an automatic-tracking implementation bug.
-- Static typecheck/lint/build/CI, live authenticated GitHub, Windows, and manual interactive-terminal/motion validation are not established. See the adoption gaps in `docs/conventions.md`.
+- Static typecheck/lint/build/CI, live authenticated GitHub, live fleet-owner activity, Windows, and manual interactive-terminal/motion validation are not established. See the adoption gaps in `docs/conventions.md`.
 
-The diagrams use standard Mermaid flowchart/sequence syntax. On 2026-10-04 both rendered with zero warnings in the already installed `grok-mermaid` 0.2.3 renderer used by Pi. This validates Pi's terminal renderer, not every browser Mermaid implementation.
+The diagrams use standard Mermaid flowchart/sequence syntax. The pre-v9 diagrams rendered without warnings in Pi's installed `grok-mermaid` 0.2.3 on 2026-10-04. The added optional-fleet edge has not been separately rendered; no current diagram-rendering gate is claimed.
 
 ## Technical decisions
 

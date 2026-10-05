@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -16,12 +17,12 @@ const hostSpecifier = process.env.PI_HOST_ROOT
 	: "@earendil-works/pi-coding-agent";
 const host = await import(hostSpecifier);
 const hostRequire = createRequire(process.env.PI_HOST_ROOT ? resolve(process.env.PI_HOST_ROOT, "package.json") : import.meta.url);
-const { stripTerminalSequences } = await import(pathToFileURL(hostRequire.resolve("@earendil-works/pi-tui")).href);
+const { stripTerminalSequences, styleText } = await import(pathToFileURL(hostRequire.resolve("@earendil-works/pi-tui")).href);
 const git = execFileSync("/usr/bin/which", ["git"], { encoding: "utf8" }).trim();
 const packageRoot = resolve(".");
 const source = resolve("src/extension.ts");
 // Footer colors are fixed concrete values; the host theme only converts them.
-const theme = { style: (text: string) => text, getColorMode: () => "truecolor" };
+const theme = { style: (text: string, options: object) => styleText(text, options, "truecolor"), getColorMode: () => "truecolor" };
 // Display shows the immediate parent/current directory; stored paths stay absolute.
 const shown = (path: string) => `${basename(dirname(path))}/${basename(path)}`;
 const row = (text: string, label: string) => text.split("\n").find((line) => line.includes(label)) ?? "";
@@ -60,7 +61,17 @@ async function fixtures(t: any) {
 }
 
 async function harness(f: any, manager: any, mode = "tui") {
-	const loader = new host.DefaultResourceLoader({ cwd: f.launch, agentDir: join(f.root, "agent"), settingsManager: host.SettingsManager.inMemory(), additionalExtensionPaths: [packageRoot], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+	// Real public bus, with transparent subscription accounting for disposal assertions.
+	const nativeBus = host.createEventBus(), subscriptions = new Map<string, number>();
+	const events = { emit: nativeBus.emit, on(channel: string, handler: (data: any) => void) {
+		subscriptions.set(channel, (subscriptions.get(channel) ?? 0) + 1);
+		const off = nativeBus.on(channel, handler); let live = true;
+		return () => { if (live) { live = false; subscriptions.set(channel, subscriptions.get(channel)! - 1); off(); } };
+	} };
+	const requests: any[] = [];
+	let rpc: ((request: any) => void | Promise<void>) | undefined;
+	events.on("subagents:rpc:v1:request", (request) => { requests.push(request); return rpc?.(request); });
+	const loader = new host.DefaultResourceLoader({ eventBus: events, cwd: f.launch, agentDir: join(f.root, "agent"), settingsManager: host.SettingsManager.inMemory(), additionalExtensionPaths: [packageRoot], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	const loaded = loader.getExtensions();
 	assert.deepEqual(loaded.errors, [], "real Pi loader must resolve the package entry and integrated workspace import");
@@ -69,7 +80,8 @@ async function harness(f: any, manager: any, mode = "tui") {
 	assert.equal(loaded.extensions[0].path, source);
 	const runner = new host.ExtensionRunner(loaded.extensions, loaded.runtime, f.launch, manager, undefined);
 	const tool = runner.getToolDefinition("set_active_project"); assert.ok(tool);
-	let component: any;
+	let component: any, footerFactory: any;
+	let idle = true;
 	let model = { id: "first-model", provider: "fixture", contextWindow: 128_000 };
 	let thinking = "high";
 	let usage: any = { tokens: 1000, contextWindow: 128_000, percent: 0.8 };
@@ -81,9 +93,9 @@ async function harness(f: any, manager: any, mode = "tui") {
 		sendMessage() {}, sendUserMessage() {}, appendEntry: (type: string, data: any) => manager.appendCustomEntry(type, data), setSessionName() {}, getSessionName: () => undefined, setLabel() {},
 		getActiveTools: () => [tool.name], getAllTools: () => [tool], getSettings: () => ({}), setActiveTools() {}, refreshTools() {}, getCommands: () => [], setModel: async () => true,
 		getThinkingLevel: () => thinking, setThinkingLevel: (value: string) => { thinking = value; },
-	}, { getModel: () => model, getScopedModels: () => [], isIdle: () => true, isProjectTrusted: () => false, getSignal: () => undefined, abort() {}, hasPendingMessages: () => false, shutdown() {}, getContextUsage: () => usage, compact() {}, getSystemPrompt: () => "" });
+	}, { getModel: () => model, getScopedModels: () => [], isIdle: () => idle, isProjectTrusted: () => false, getSignal: () => undefined, abort() {}, hasPendingMessages: () => false, shutdown() {}, getContextUsage: () => usage, compact() {}, getSystemPrompt: () => "" });
 	runner.setUIContext({ setFooter(factory: any) {
-		component?.dispose(); component = undefined;
+		component?.dispose(); component = undefined; footerFactory = factory;
 		if (factory) component = factory({ requestRender: () => { renders++; } }, theme, { getExtensionStatuses: () => statuses });
 	}, notify(message: string, level: string) { notices.push([level, message]); } }, mode);
 	const emitStart = async (reason = "startup") => runner.emit({ type: "session_start", reason });
@@ -96,7 +108,11 @@ async function harness(f: any, manager: any, mode = "tui") {
 		if (persist) manager.appendMessage({ role: "toolResult", toolCallId: id, toolName: tool.name, content: result.content, details: result.details, isError: false, timestamp: Date.now() });
 		return result;
 	};
-	return { runner, tool, emitStart, stop, text, select, statuses, errors, motion, notices, get component() { return component; }, get renders() { return renders; }, setUsage(value: any) { usage = value; }, changeModel() { model = { ...model, id: "second-model" }; thinking = "off"; usage = { tokens: null, percent: null, contextWindow: 128_000 }; } };
+	return { events, requests, subscriptions, setRpc(handler?: (request: any) => void | Promise<void>) { rpc = handler; },
+		setIdle(value: boolean) { idle = value; },
+		reply(request: any, data: any, envelope = {}) { events.emit(`subagents:rpc:v1:reply:${request.requestId}`, { version: 1, requestId: request.requestId, method: request.method, success: true, data, ...envelope }); },
+		replaceFooter() { const previous = component; previous?.dispose(); component = footerFactory({ requestRender: () => { renders++; } }, theme, { getExtensionStatuses: () => statuses }); return previous; },
+		runner, tool, emitStart, stop, text, select, statuses, errors, motion, notices, get component() { return component; }, get renders() { return renders; }, setUsage(value: any) { usage = value; }, changeModel() { model = { ...model, id: "second-model" }; thinking = "off"; usage = { tokens: null, percent: null, contextWindow: 128_000 }; } };
 }
 
 test("real loader registration; display-only signal, invalid paths, aborted calls and non-TUI", async (t) => {
@@ -118,6 +134,8 @@ test("real loader registration; display-only signal, invalid paths, aborted call
 	assert.equal(manager.getEntries().length, before);
 	await h.motion("off"); await h.motion("");
 	assert.equal(h.component, undefined, "non-TUI motion control installs no footer or timer");
+	assert.equal(h.requests.length, 0, "non-TUI modes do not collect display-only fleet data");
+	assert.equal(h.subscriptions.get("subagents:rpc:v1:ready") ?? 0, 0);
 	assert.deepEqual(h.errors, []);
 });
 
@@ -126,9 +144,9 @@ test("real host supplies home for display without changing absolute selection de
 	process.env.HOME = f.root;
 	const manager = host.SessionManager.inMemory(f.launch);
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
-	assert.match(h.text(), /01 LAUNCH +~\/launch /);
+	assert.match(h.text(), /01 LDR +~\/launch /);
 	const result = await h.select(f.plain);
-	assert.match(h.text(), /02 ACTIVE +~\/plain ü /);
+	assert.match(h.text(), /02 ACT +~\/plain ü /);
 	assert.equal(result.details.path, f.plain);
 	assert.equal(manager.getCwd(), f.launch);
 });
@@ -139,26 +157,26 @@ test("tree restoration follows branch; reload/resume and fork restore; new sessi
 	const rootId = manager.appendMessage({ role: "assistant", content: [], api: "openai-completions", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() });
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
 	await h.select(f.repo); const repoId = manager.getLeafId();
-	await h.select(f.plain); assert.ok(row(h.text(), "ACTIVE").includes(shown(f.plain)));
+	await h.select(f.plain); assert.ok(row(h.text(), "02 ACT").includes(shown(f.plain)));
 	manager.branch(repoId);
 	await h.runner.emit({ type: "session_tree", newLeafId: repoId, oldLeafId: null });
-	assert.ok(row(h.text(), "ACTIVE").includes(shown(f.repo)));
-	assert.ok(row(h.text(), "LAUNCH").includes(shown(f.launch)));
+	assert.ok(row(h.text(), "02 ACT").includes(shown(f.repo)));
+	assert.ok(row(h.text(), "01 LDR").includes(shown(f.launch)));
 	// Persist an entry on the selected branch: a leaf pointer alone is not a
 	// durable session-file change when later reopened by SessionManager.open.
 	manager.appendCustomEntry("fixture-selected-branch", {});
 	await h.stop("reload"); h.runner.invalidate();
 	const restored = await harness(f, manager); t.after(() => restored.stop()); await restored.emitStart("reload");
-	assert.ok(row(restored.text(), "ACTIVE").includes(shown(f.repo)));
+	assert.ok(row(restored.text(), "02 ACT").includes(shown(f.repo)));
 	const resumed = await harness(f, host.SessionManager.open(manager.getSessionFile())); t.after(() => resumed.stop()); await resumed.emitStart("resume");
-	assert.ok(row(resumed.text(), "ACTIVE").includes(shown(f.repo)));
+	assert.ok(row(resumed.text(), "02 ACT").includes(shown(f.repo)));
 	const forkManager = host.SessionManager.forkFrom(manager.getSessionFile(), f.launch, join(f.root, "forks"));
 	const forked = await harness(f, forkManager); t.after(() => forked.stop()); await forked.emitStart("fork");
-	assert.ok(row(forked.text(), "ACTIVE").includes(shown(f.repo)));
+	assert.ok(row(forked.text(), "02 ACT").includes(shown(f.repo)));
 	manager.branch(rootId); await restored.runner.emit({ type: "session_tree", newLeafId: rootId, oldLeafId: repoId });
-	assert.ok(row(restored.text(), "ACTIVE").includes(shown(f.launch)));
+	assert.ok(row(restored.text(), "02 ACT").includes(shown(f.launch)));
 	const fresh = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => fresh.stop()); await fresh.emitStart("new");
-	assert.ok(row(fresh.text(), "ACTIVE").includes(shown(f.launch)));
+	assert.ok(row(fresh.text(), "02 ACT").includes(shown(f.launch)));
 });
 
 test("live context/model/statuses; local tool refresh, stale completions and owner disposal", async (t) => {
@@ -170,12 +188,12 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 	await until(() => /release {3}modified/.test(h.text()));
 	h.statuses.set("second", "Second extension status"); h.changeModel();
 	assert.match(h.text(), /Ponytail ready/); assert.match(h.text(), /Second extension status/);
-	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), / \?\/128k {3}\? UNKNOWN/);
+	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/);
 	await writeFile(join(f.second, ".slow-git"), "delay");
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
-	const plainOnly = new RegExp(`02 ACTIVE +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +▐`);
+	const plainOnly = new RegExp(`02 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +▐`);
 	await until(() => plainOnly.test(h.text())); await sleep(700);
-	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /MAIN|release|GITHUB|Not a Git repository|No GitHub remote/);
+	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /2\.1 MN|release|GITHUB|Not a Git repository|No GitHub remote/);
 	await h.select(f.second); await sleep(30); const priorRenders = h.renders;
 	await h.stop(); h.runner.invalidate(); await sleep(700);
 	assert.equal(h.renders, priorRenders); assert.equal(h.component, undefined); assert.deepEqual(h.errors, []);
@@ -192,7 +210,7 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release {3}clean/.test(h.text()) && /^┏━ GITHUB fixture\/status-bar ─/m.test(h.text()));
+	await until(() => /release {3}clean/.test(h.text()) && /GITHUB fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
 	assert.equal(await f.count(f.ghLog), 1);
 	assert.deepEqual(h.errors, []);
 });
@@ -232,7 +250,7 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	const refTimers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
 	const h = await harness(f, manager); t.after(() => h.stop());
 	const baseline = refTimers();
-	await h.emitStart(); await until(() => /02 ACTIVE +\S+\/launch +▐/.test(h.text())); await sleep(200);
+	await h.emitStart(); await until(() => /02 ACT +\S+\/launch +▐/.test(h.text())); await sleep(200);
 	const local = await f.count(f.gitLog), remote = await f.count(f.ghLog);
 	let renders = h.renders; await sleep(600);
 	assert.ok(h.renders > renders, "decoration repaints itself while motion is on");
@@ -240,18 +258,18 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	assert.equal(await f.count(f.gitLog), local, "animation never inspects Git");
 	assert.equal(await f.count(f.ghLog), remote, "animation never queries GitHub");
 	h.setUsage({ tokens: 120_000, contextWindow: 128_000, percent: 93.75 });
-	assert.match(h.text(), / 93\.8%\/128k {3}▲ HIGH/, "a tone change shows the current value immediately, mid-wipe");
+	assert.match(h.text(), /93\.8%\/128k[^\n]*▲ HIGH/, "a tone change shows the current value immediately, mid-wipe");
 
 	const cleared = t.mock.method(globalThis, "clearTimeout");
 	await h.motion("off");
 	assert.ok(cleared.mock.callCount() >= 1, "pausing clears the pending animation timeout"); cleared.mock.restore();
 	assert.deepEqual(h.notices.at(-1), ["info", "Footer motion off for this session"]);
 	const settled = h.text(); renders = h.renders;
-	assert.match(settled.split("\n")[0], /━┓$/, "settled frame is fully drawn");
+	assert.match(settled.split("\n")[0], /┓$/, "settled frame is fully drawn");
 	await sleep(600);
 	assert.equal(h.renders, renders, "motion off leaves no repaint timer"); assert.equal(h.text(), settled);
 	h.setUsage({ tokens: null, contextWindow: 128_000, percent: null });
-	assert.match(h.text(), / \?\/128k {3}\? UNKNOWN/, "live values still update with motion off");
+	assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/, "live values still update with motion off");
 	await h.motion("sideways");
 	assert.deepEqual(h.notices.at(-1), ["warning", "Usage: /footer-motion [on|off]"]);
 	await sleep(300); assert.equal(h.renders, renders, "invalid arguments leave motion unchanged");
@@ -268,4 +286,178 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	await fresh.emitStart(); renders = fresh.renders; await sleep(600);
 	assert.ok(fresh.renders > renders, "a new session starts with motion on");
 	assert.deepEqual([...h.errors, ...fresh.errors], []);
+});
+
+const pingData = (manager: any) => ({ version: 1, session: { sessionId: manager.getSessionId() }, capabilities: { fleetStatus: { version: 1 } } });
+const fleetData = (units: number) => ({ fleet: { version: 1, entries: [], totalActive: units, omitted: units } });
+const replyListeners = (h: any) => [...h.subscriptions].filter(([name]: [string, number]) => name.startsWith("subagents:rpc:v1:reply:")).reduce((sum: number, [, n]: [string, number]) => sum + n, 0);
+// Keep real subprocess fixtures outside the mock-clock phase. Only this adapter's
+// activity/decoration timers are accelerated; the bus itself remains Pi's bus.
+async function activityClock(t: any, h: any) {
+	await until(() => !/Git pending/.test(h.text()));
+	await sleep(300);
+	await h.motion("off");
+	let now = Math.ceil(performance.now());
+	t.mock.method(performance, "now", () => now);
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	return async (ms: number) => { now += ms; t.mock.timers.tick(ms); for (let n = 0; n < 16; n++) await Promise.resolve(); };
+}
+
+test("public fleet RPC: async bus delivery, exact AU overflow, independent ROOT settlement, live motion-off and bounded coalescing", async (t) => {
+	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager);
+	t.after(() => h.stop());
+	let units = 103;
+	h.setRpc(async (request) => {
+		await Promise.resolve(); // emit() must not be mistaken for an awaited reply
+		h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(units));
+	});
+	// Owner ready before footer session_start is permitted; initial ping must find it.
+	h.events.emit("subagents:rpc:v1:ready", pingData(manager));
+	await h.emitStart();
+	const advance = await activityClock(t, h);
+	assert.match(h.text(), /103 AU/);
+	assert.equal(replyListeners(h), 0);
+	assert.deepEqual(h.requests.map((r: any) => r.method), ["ping", "status"]);
+	assert.ok(h.requests.every((r: any) => r.params === undefined), "only untargeted status; no executor-rich request");
+	h.statuses.set("subagents", "native status preserved");
+	const idle = h.component.render(300).join("\n");
+	h.setIdle(false); let repaints = h.renders;
+	await h.runner.emit({ type: "agent_start" });
+	assert.ok(h.renders > repaints);
+	const working = h.component.render(300).join("\n");
+	assert.notEqual(working, idle, "ROOT lamp uses current isIdle even when decoration is off");
+	await h.runner.emit({ type: "agent_end", messages: [] });
+	assert.equal(h.component.render(300).join("\n"), working, "agent_end is not settlement: root can still retry/continue");
+	h.setIdle(true); await h.runner.emit({ type: "agent_settled" });
+	assert.equal(h.component.render(300).join("\n"), idle, "settlement repaints the idle root with the same 103 AU");
+	assert.match(h.text(), /native status preserved/);
+	units = 0;
+	for (let n = 0; n < 30; n++) await h.runner.emit({ type: "agent_settled" });
+	const before = h.requests.length;
+	for (let n = 0; n < 30; n++) h.text();
+	assert.equal(h.requests.length, before, "renders never query the bus");
+	await advance(1_000);
+	assert.equal(h.requests.length, before + 2, "burst coalesces to one ping/status cycle");
+	assert.match(h.text(), /  0 AU /, "confirmed zero is not Unknown");
+	units = Number.MAX_SAFE_INTEGER;
+	await advance(5_000);
+	assert.match(h.text(), /9007199254740991 AU/, "never use bounded entries.length or cap the exact total");
+	const known = h.text();
+	h.events.emit("subagents:rpc:v1:ready", { ...pingData(manager), session: { sessionId: "other" } });
+	assert.equal(h.text(), known, "another session's ready event cannot invalidate this owner");
+	await h.motion("on");
+	const rpcCount = h.requests.length, renderCount = h.renders;
+	for (let n = 0; n < 20; n++) { await advance(50); h.text(); }
+	assert.ok(h.renders > renderCount && h.renders <= renderCount + 21, "one bounded decoration wake per 50ms quantum");
+	assert.equal(h.requests.length, rpcCount, "animation frames do not perform activity collection");
+	await h.motion("off");
+	assert.equal(replyListeners(h), 0);
+	assert.deepEqual(h.errors, []);
+});
+
+test("public fleet RPC rejects unsupported, malformed, wrong-session and error replies; timeout/no owner stays Unknown and recovers", async (t) => {
+	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager);
+	t.after(() => h.stop());
+	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(3)));
+	await h.emitStart(); const advance = await activityClock(t, h);
+	assert.match(h.text(), /3 AU/);
+	const cases = [
+		{ method: "ping", data: { ...pingData(manager), version: 2 } },
+		{ method: "ping", data: { ...pingData(manager), capabilities: {} } },
+		{ method: "ping", data: { ...pingData(manager), capabilities: { fleetStatus: { version: 2 } } } },
+		{ method: "ping", data: { ...pingData(manager), session: {} } },
+		{ method: "ping", data: { ...pingData(manager), session: { sessionId: "other" } } },
+		{ method: "status", data: null },
+		{ method: "status", data: { fleet: { ...fleetData(0).fleet, version: 2 } } },
+		{ method: "status", data: { fleet: { ...fleetData(0).fleet, entries: "bad" } } },
+		{ method: "status", data: { fleet: { ...fleetData(3).fleet, omitted: 0 } } },
+		...[-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "3", null].map((value) => ({ method: "status", data: { fleet: { ...fleetData(0).fleet, totalActive: value } } })),
+		{ method: "status", data: fleetData(0), envelope: { version: 2 } },
+		{ method: "status", data: fleetData(0), envelope: { requestId: "wrong" } },
+		{ method: "status", data: fleetData(0), envelope: { method: "cost" } },
+		{ method: "status", data: fleetData(0), envelope: { success: "true" } },
+		{ method: "status", data: { ...fleetData(0), isError: true } },
+		{ method: "status", envelope: { success: false, error: { code: "execution_failed", message: "private error" } } },
+	];
+	for (const item of cases) {
+		const before = h.requests.length;
+		h.setRpc((request) => h.reply(request, request.method === item.method ? item.data : pingData(manager), request.method === item.method ? item.envelope : undefined));
+		h.events.emit("subagents:rpc:v1:ready", pingData(manager));
+		await advance(1_000);
+		assert.match(h.text(), /\? AU/, JSON.stringify(item));
+		assert.doesNotMatch(h.text(), /private error/);
+		assert.equal(replyListeners(h), 0);
+		assert.equal(h.requests.length - before, item.method === "ping" ? 1 : 2, JSON.stringify(item) + ": unsupported capability never calls status");
+	}
+	// Previously known values must also disappear when a status request times out.
+	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(7)));
+	h.events.emit("subagents:rpc:v1:ready", pingData(manager)); await advance(1_000);
+	assert.match(h.text(), /7 AU/);
+	let delayed: any;
+	h.setRpc((request) => { if (request.method === "ping") h.reply(request, pingData(manager)); else delayed = request; });
+	await advance(5_000);
+	assert.match(h.text(), /7 AU/, "keep the last sample only while a bounded refresh is pending");
+	assert.equal(replyListeners(h), 1);
+	const beforeTimeout = h.requests.length;
+	for (let n = 0; n < 10; n++) await h.runner.emit({ type: "agent_settled" });
+	await advance(1_999);
+	assert.equal(h.requests.length, beforeTimeout, "in-flight requests are not overlapped");
+	await advance(1);
+	assert.equal(replyListeners(h), 0); assert.match(h.text(), /\? AU/);
+	h.reply(delayed, fleetData(88)); assert.match(h.text(), /\? AU/, "late timeout reply cannot revive data");
+	h.setRpc(); await advance(1_000); // no owner: ping cannot be handled
+	assert.equal(replyListeners(h), 1);
+	await advance(2_000); assert.equal(replyListeners(h), 0); assert.match(h.text(), /\? AU/);
+	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(0)));
+	h.events.emit("subagents:rpc:v1:ready", pingData(manager)); await advance(1_000);
+	assert.match(h.text(), /  0 AU /); assert.equal(replyListeners(h), 0);
+	assert.deepEqual(h.errors, []);
+});
+
+test("fleet/decoration ownership: ready replacement, tree/new session, footer replacement/disposal and shutdown ignore stale replies", async (t) => {
+	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager);
+	t.after(() => h.stop());
+	let delayed: any;
+	h.setRpc((request) => { if (request.method === "ping") h.reply(request, pingData(manager)); else delayed = request; });
+	await h.emitStart(); const advance = await activityClock(t, h);
+	assert.equal(replyListeners(h), 1);
+	const first = delayed;
+	h.events.emit("subagents:rpc:v1:ready", pingData(manager));
+	assert.equal(replyListeners(h), 0);
+	h.reply(first, fleetData(91)); assert.match(h.text(), /\? AU/);
+	await advance(1_000); assert.equal(replyListeners(h), 1);
+	let old = delayed;
+	await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
+	assert.equal(replyListeners(h), 0);
+	h.reply(old, fleetData(92)); assert.match(h.text(), /\? AU/);
+	await advance(250); old = delayed;
+	manager.newSession(); await h.emitStart("new");
+	assert.equal(replyListeners(h), 0); h.reply(old, fleetData(93)); assert.match(h.text(), /\? AU/);
+	await h.motion("off"); await advance(250); old = delayed;
+	const previous = h.replaceFooter();
+	assert.equal(replyListeners(h), 0);
+	previous.dispose(); // obsolete component must not dispose its replacement
+	assert.equal(h.subscriptions.get("subagents:rpc:v1:ready"), 1);
+	assert.deepEqual(previous.render(300), []);
+	h.reply(old, fleetData(94)); assert.match(h.text(), /\? AU/);
+	await advance(250); old = delayed;
+	h.component.dispose();
+	assert.equal(replyListeners(h), 0);
+	assert.equal(h.subscriptions.get("subagents:rpc:v1:ready"), 0);
+	const renders = h.renders, requests = h.requests.length;
+	h.reply(old, fleetData(95)); h.events.emit("subagents:rpc:v1:ready", pingData(manager));
+	await advance(10_000);
+	assert.equal(h.renders, renders); assert.equal(h.requests.length, requests);
+	assert.deepEqual(h.component.render(300), []);
+	// Display disposal does not remove the agent's display-only selection capability.
+	const selection = await h.select(f.plain); assert.equal(selection.details.path, f.plain);
+	h.replaceFooter(); await advance(250);
+	assert.equal(replyListeners(h), 1);
+	old = delayed;
+	await h.stop(); h.runner.invalidate();
+	const stoppedRequests = h.requests.length;
+	h.reply(old, fleetData(96)); await advance(10_000);
+	assert.equal(replyListeners(h), 0); assert.equal(h.requests.length, stoppedRequests);
+	assert.equal(h.subscriptions.get("subagents:rpc:v1:ready"), 0);
+	assert.deepEqual(h.errors, []);
 });
