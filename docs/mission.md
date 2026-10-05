@@ -16,6 +16,7 @@ Goals:
 - Preserve current context, model, thinking level, and every other extension status.
 - Remain readable across terminal widths and safe for untrusted repository/path text.
 - Refresh external changes without doing local or network I/O during rendering.
+- Present this in the selected Acid / Black instrument-panel design, whose decorative motion never changes or delays displayed values and can be turned off per session.
 
 Non-goals:
 
@@ -23,14 +24,14 @@ Non-goals:
 - Automatically inferring project switches from reads or other incidental activity.
 - Performing Git writes, opening pull requests, or configuring/authenticating GitHub.
 - Showing cumulative token totals, cache metrics, or cost.
-- Adding settings UI, clickable controls, branch watchers, or a general workspace-management framework.
+- Adding persistent settings UI, clickable controls, branch watchers, or a general workspace-management framework.
 
 Success is represented by deterministic coverage of the workspace, renderer, and real Pi loader/lifecycle boundaries. Live authenticated GitHub and subjective interactive ergonomics remain explicit validation gaps.
 
 ## Constraints
 
 - The runtime uses Node.js standard library plus host-provided Pi, Pi TUI, and TypeBox peers; no bundled runtime dependencies.
-- Local Git and `gh` operations are read-only, bounded, cancellable, and outside render.
+- Local Git and `gh` operations are read-only, bounded, cancellable, and outside render. Decoration timers only request repaints.
 - Active selection is session-local and follows the selected session branch; it must not leak to a new session.
 - Missing tools, auth, network, checkout metadata, or malformed external responses remain visible as unavailable states.
 - The extension must continue to work in non-TUI Pi modes even though no footer is installed.

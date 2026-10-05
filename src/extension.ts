@@ -2,13 +2,16 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { renderFooter, safeText } from "./footer.ts";
+import { motionFrame, nextMotionDelay, observeContext, renderFooter, safeText, startMotion } from "./footer.ts";
+import type { FooterFrame, MotionState } from "./footer.ts";
 import { inspectPullRequest, inspectWorkspace, resolveActivePath } from "./workspace.ts";
 import type { PullRequestInfo, WorkspaceInfo } from "./workspace.ts";
 
 const LOCAL_REFRESH_MS = 15_000;
 const PR_TTL_MS = 60_000;
 type Selection = { version: 1; path: string };
+// Decoration only: owned by one installed TUI footer and never triggers inspection.
+type Animation = { state: MotionState; timer?: ReturnType<typeof setTimeout>; due?: number; shown?: string; schedule(now: number): void };
 type SessionState = {
 	ctx: ExtensionContext;
 	id: string;
@@ -24,6 +27,8 @@ type SessionState = {
 	refreshPending: boolean;
 	timer?: ReturnType<typeof setInterval>;
 	requestRender?: () => void;
+	motion: boolean;
+	animation?: Animation;
 };
 
 export default function (pi: ExtensionAPI) {
@@ -38,6 +43,12 @@ export default function (pi: ExtensionAPI) {
 		s.localAbort = s.prAbort = undefined;
 		s.refreshPending = false;
 		s.requestRender = undefined;
+		stopAnimation(s);
+		s.animation = undefined;
+	};
+	const stopAnimation = (s: SessionState) => {
+		if (s.animation?.timer) clearTimeout(s.animation.timer);
+		if (s.animation) s.animation.timer = s.animation.due = undefined;
 	};
 
 	async function refreshPR(s: SessionState, workspace: WorkspaceInfo) {
@@ -103,6 +114,7 @@ export default function (pi: ExtensionAPI) {
 	function restore(ctx: ExtensionContext) {
 		const id = ctx.sessionManager.getSessionId();
 		const prCache = session?.id === id ? session.prCache : new Map<string, { at: number; value: PullRequestInfo }>();
+		const motion = session?.id === id ? session.motion : true;
 		if (session) stopWork(session);
 		const launch = ctx.sessionManager.getHeader()?.cwd ?? ctx.sessionManager.getCwd();
 		let active = launch;
@@ -113,17 +125,46 @@ export default function (pi: ExtensionAPI) {
 			const data = entry.message.details as Partial<Selection> | undefined;
 			if (data?.version === 1 && typeof data.path === "string" && isAbsolute(data.path)) active = data.path;
 		}
-		const s: SessionState = { ctx, id, launch, active, selection: 0, pr: { kind: "unavailable", reason: "lookup pending" }, prCache, refreshPending: false };
+		const s: SessionState = { ctx, id, launch, active, selection: 0, pr: { kind: "unavailable", reason: "lookup pending" }, prCache, refreshPending: false, motion };
 		session = s;
 		if (ctx.mode === "tui") {
 			ctx.ui.setFooter((tui, theme, footerData) => {
 				const render = () => tui.requestRender();
 				s.requestRender = render;
+				const frameKey = (frame: FooterFrame | undefined) => JSON.stringify(frame ?? null);
+				const animation: Animation = {
+					state: startMotion(Date.now()),
+					// One unref'd timeout at a time, due at the next visible decoration step.
+					schedule(now) {
+						if (!s.motion || !current(s) || s.animation !== animation) return;
+						const due = now + nextMotionDelay(animation.state, now);
+						if (animation.timer && animation.due! <= due) return;
+						if (animation.timer) clearTimeout(animation.timer);
+						animation.due = due;
+						animation.timer = setTimeout(() => {
+							animation.timer = animation.due = undefined;
+							if (!s.motion || !current(s) || s.animation !== animation) return;
+							const time = Date.now();
+							if (frameKey(motionFrame(animation.state, time)) !== animation.shown) render();
+							animation.schedule(time);
+						}, due - now);
+						animation.timer.unref();
+					},
+				};
+				s.animation = animation;
+				animation.schedule(Date.now());
 				return {
 					invalidate() {},
 					render(width) {
 						if (!current(s)) return [];
-						return renderFooter({ homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr, contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(), statuses: footerData.getExtensionStatuses() }, width, theme);
+						const now = Date.now(), contextUsage = s.ctx.getContextUsage();
+						// Values are always current; only plate wipes and boundary flashes remember changes.
+						const previous = animation.state;
+						animation.state = observeContext(previous, contextUsage?.percent, now);
+						const frame = s.motion ? motionFrame(animation.state, now) : undefined;
+						animation.shown = frameKey(frame);
+						if (animation.state !== previous) animation.schedule(now);
+						return renderFooter({ homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr, contextUsage, model: s.ctx.model, thinking: pi.getThinkingLevel(), statuses: footerData.getExtensionStatuses() }, width, theme, frame);
 					},
 					dispose() { if (s.requestRender === render) stopWork(s); },
 				};
@@ -142,6 +183,24 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
 	});
 	pi.on("tool_execution_end", () => { if (session) void refreshLocal(session); });
+
+	pi.registerCommand("footer-motion", {
+		description: "Footer decoration motion for this session: on, off, or toggle when empty. Live values keep updating.",
+		getArgumentCompletions: (prefix) => ["on", "off"].filter((value) => value.startsWith(prefix.trim())).map((value) => ({ value, label: value })),
+		async handler(args, ctx) {
+			const s = session, choice = args.trim().toLowerCase();
+			if (choice && choice !== "on" && choice !== "off") {
+				if (ctx.hasUI) ctx.ui.notify("Usage: /footer-motion [on|off]", "warning");
+				return;
+			}
+			if (!s) return;
+			s.motion = choice ? choice === "on" : !s.motion;
+			if (s.motion) s.animation?.schedule(Date.now());
+			else stopAnimation(s);
+			s.requestRender?.();
+			if (ctx.hasUI) ctx.ui.notify(`Footer motion ${s.motion ? "on" : "off"} for this session`, "info");
+		},
+	});
 
 	pi.registerTool({
 		name: "set_active_project",

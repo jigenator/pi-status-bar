@@ -43,11 +43,11 @@ Use descriptive lower-case filenames and named exports for reusable domain/rende
 
 ## Functions, APIs, and abstractions
 
-**Rule:** use explicit inputs/results and make side effects visible. **Example:** `inspectWorkspace(path, { signal })` performs bounded reads and returns a complete state union; `renderFooter(snapshot, width, theme)` performs no I/O. **Reason:** callers can distinguish failure and control cancellation. **Check:** tests exercise success, failure, cancellation, and stale completion.
+**Rule:** use explicit inputs/results and make side effects visible. **Example:** `inspectWorkspace(path, { signal })` performs bounded reads and returns a complete state union; `renderFooter(snapshot, width, theme, frame)` performs no I/O and receives decoration time as a frame instead of reading a clock. **Reason:** callers can distinguish failure and control cancellation. **Check:** tests exercise success, failure, cancellation, and stale completion.
 
-**Rule:** extract behavior only when semantics are genuinely shared. **Example:** terminal sanitization is centralized in `safeText`; active and main checkout formatting reuse the private `checkout` function. Do not merge local Git and GitHub PR caches merely because both refresh. **Reason:** similar timing does not mean identical invalidation or failure rules. **Check:** identify callers and invariants before extraction; no speculative factory/interface/base class.
+**Rule:** extract behavior only when semantics are genuinely shared. **Example:** terminal sanitization is centralized in `safeText`; active and main checkout formatting reuse the private `checkout` helper. Do not merge local Git and GitHub PR caches merely because both refresh. **Reason:** similar timing does not mean identical invalidation or failure rules. **Check:** identify callers and invariants before extraction; no speculative factory/interface/base class.
 
-Public compatibility currently consists of the package entry, tool name/schema/details, and workspace exports used by the extension/tests. Change these deliberately with updated integration coverage and, when consequential, a decision record.
+Public compatibility currently consists of the package entry, tool name/schema/details, the `/footer-motion` command, and workspace exports used by the extension/tests. Change these deliberately with updated integration coverage and, when consequential, a decision record.
 
 ## Types and validation
 
@@ -76,7 +76,7 @@ Successful selection details are stored in the Pi session branch and restored on
 Use the lowest layer that owns the behavior:
 
 - `test/workspace.test.ts`: domain/contract tests with real disposable Git and deterministic fake executables.
-- `test/footer.test.ts`: pure renderer states, snapshots, width, theme, and sanitization.
+- `test/footer.test.ts`: pure renderer states, snapshots, palette, width, motion frames/schedule, and sanitization.
 - `test/extension.test.ts`: real installed Pi package loading, tool/lifecycle/session persistence, refresh/cache, cancellation, and disposal.
 
 **Rule:** no test may depend on a live GitHub account/network, user Git identity, hooks, signing, or ambient Git routing. **Reason:** tests must be deterministic and non-destructive. **Check:** fixture setup isolates config and replaces `gh`.
@@ -91,7 +91,7 @@ A new dependency requires a current need, comparison with stdlib/host APIs, main
 
 ## Performance and growth
 
-Current bounded behavior: local status refreshes after tool completion and every 15 seconds in TUI mode; PR results cache for 60 seconds by repository URL/name and branch; Git commands time out after 4 seconds, `gh` after 10 seconds, and subprocess output is capped at 1 MiB. Rendering performs no I/O and line output is width-bounded.
+Current bounded behavior: decoration repaints only when its frame changes (about three times per second when settled, up to 20 per second for at most 1.5 s of transients, none when `/footer-motion off`); a footer render measured about 0.3–0.6 ms at 48–160 columns on the 2026-10-04 baseline machine; local status refreshes after tool completion and every 15 seconds in TUI mode; PR results cache for 60 seconds by repository URL/name and branch; Git commands time out after 4 seconds, `gh` after 10 seconds, and subprocess output is capped at 1 MiB. Rendering performs no I/O and line output is width-bounded.
 
 No production workload or measured bottleneck exists. Treat suspected redraw, process-count, or large-repository cost as a measurement task before adding watchers, workers, services, persistence, or another cache. Revisit intervals only with observed latency/load data and lifecycle tests.
 
@@ -100,7 +100,7 @@ No production workload or measured bottleneck exists. Treat suspected redraw, pr
 | Gap | Priority / evidence | Next change | Verification |
 | --- | --- | --- | --- |
 | No standalone static typecheck, formatter, linter, build, or CI gate | Medium; current checks are runtime tests and syntax stripping | Evaluate the smallest tool only when maintainers approve dependency/tooling expansion | Proposed check—not implemented; do not claim these gates today |
-| No manual live interactive-terminal/theme review | Medium for presentation; automated width/theme semantics pass | Exercise the unpackaged local extension across representative themes/widths without changing user settings | Manual check—not run |
+| No manual live interactive-terminal/motion review | Medium for presentation; automated palette, width and motion checks pass | Exercise the unpackaged local extension at representative widths and color modes without changing user settings | Manual check—not run |
 | No live authenticated GitHub validation | Low for deterministic correctness; API boundary is mocked and validated | Run a read-only opt-in smoke against a controlled public repository if explicitly authorized | Opt-in check—not implemented; normal suite remains offline |
 | Agent can forget to update Active | Product limitation inherent in explicit signaling | Collect evidence before changing the decision; do not infer from incidental reads | Revisit condition in the decision record |
 | Windows execution is untested | Unknown relevance; implementation uses platform APIs but POSIX fixtures | Add platform CI only when Windows support is required | Proposed check—not implemented |

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { createRequire } from "node:module";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
@@ -14,10 +15,16 @@ const hostSpecifier = process.env.PI_HOST_ROOT
 	? pathToFileURL(resolve(process.env.PI_HOST_ROOT, "dist/index.js")).href
 	: "@earendil-works/pi-coding-agent";
 const host = await import(hostSpecifier);
+const hostRequire = createRequire(process.env.PI_HOST_ROOT ? resolve(process.env.PI_HOST_ROOT, "package.json") : import.meta.url);
+const { stripTerminalSequences } = await import(pathToFileURL(hostRequire.resolve("@earendil-works/pi-tui")).href);
 const git = execFileSync("/usr/bin/which", ["git"], { encoding: "utf8" }).trim();
 const packageRoot = resolve(".");
 const source = resolve("src/extension.ts");
-const theme = { fg: (_color: string, text: string) => text };
+// Footer colors are fixed concrete values; the host theme only converts them.
+const theme = { style: (text: string) => text, getColorMode: () => "truecolor" };
+// Display shows the immediate parent/current directory; stored paths stay absolute.
+const shown = (path: string) => `${basename(dirname(path))}/${basename(path)}`;
+const row = (text: string, label: string) => text.split("\n").find((line) => line.includes(label)) ?? "";
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
 async function until(check: () => boolean | Promise<boolean>) {
 	for (let n = 0; n < 200; n++) { if (await check()) return; await sleep(20); }
@@ -66,6 +73,7 @@ async function harness(f: any, manager: any, mode = "tui") {
 	let model = { id: "first-model", provider: "fixture", contextWindow: 128_000 };
 	let thinking = "high";
 	let usage: any = { tokens: 1000, contextWindow: 128_000, percent: 0.8 };
+	const notices: [string, string][] = [];
 	const statuses = new Map([["ponytail", "\x1b[32mPonytail ready\x1b[0m"]]);
 	let renders = 0;
 	const errors: any[] = []; runner.onError((error: any) => errors.push(error));
@@ -77,17 +85,18 @@ async function harness(f: any, manager: any, mode = "tui") {
 	runner.setUIContext({ setFooter(factory: any) {
 		component?.dispose(); component = undefined;
 		if (factory) component = factory({ requestRender: () => { renders++; } }, theme, { getExtensionStatuses: () => statuses });
-	} }, mode);
+	}, notify(message: string, level: string) { notices.push([level, message]); } }, mode);
 	const emitStart = async (reason = "startup") => runner.emit({ type: "session_start", reason });
 	const stop = async (reason = "quit") => runner.emit({ type: "session_shutdown", reason });
-	const text = () => component?.render(300).join("\n") ?? "";
+	const text = () => component?.render(300).map((line: string) => stripTerminalSequences(line)).join("\n") ?? "";
+	const motion = async (args: string) => runner.getCommand("footer-motion").handler(args, runner.createCommandContext());
 	const select = async (path: string, signal?: AbortSignal, persist = true) => {
 		const id = `selection-${manager.getEntries().length}`;
 		const result = await tool.execute(id, { path }, signal, undefined, runner.createToolContext(id, signal));
 		if (persist) manager.appendMessage({ role: "toolResult", toolCallId: id, toolName: tool.name, content: result.content, details: result.details, isError: false, timestamp: Date.now() });
 		return result;
 	};
-	return { runner, tool, emitStart, stop, text, select, statuses, errors, get component() { return component; }, get renders() { return renders; }, changeModel() { model = { ...model, id: "second-model" }; thinking = "off"; usage = { tokens: null, percent: null, contextWindow: 128_000 }; } };
+	return { runner, tool, emitStart, stop, text, select, statuses, errors, motion, notices, get component() { return component; }, get renders() { return renders; }, setUsage(value: any) { usage = value; }, changeModel() { model = { ...model, id: "second-model" }; thinking = "off"; usage = { tokens: null, percent: null, contextWindow: 128_000 }; } };
 }
 
 test("real loader registration; display-only signal, invalid paths, aborted calls and non-TUI", async (t) => {
@@ -107,6 +116,8 @@ test("real loader registration; display-only signal, invalid paths, aborted call
 	const abort = new AbortController(); abort.abort();
 	await assert.rejects(h.select(f.repo, abort.signal), /cancelled|session changed/);
 	assert.equal(manager.getEntries().length, before);
+	await h.motion("off"); await h.motion("");
+	assert.equal(h.component, undefined, "non-TUI motion control installs no footer or timer");
 	assert.deepEqual(h.errors, []);
 });
 
@@ -115,9 +126,9 @@ test("real host supplies home for display without changing absolute selection de
 	process.env.HOME = f.root;
 	const manager = host.SessionManager.inMemory(f.launch);
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
-	assert.match(h.text(), /Launch: ~\/launch/);
+	assert.match(h.text(), /01 LAUNCH +~\/launch /);
 	const result = await h.select(f.plain);
-	assert.match(h.text(), /Active: ~\/plain ü/);
+	assert.match(h.text(), /02 ACTIVE +~\/plain ü /);
 	assert.equal(result.details.path, f.plain);
 	assert.equal(manager.getCwd(), f.launch);
 });
@@ -128,42 +139,43 @@ test("tree restoration follows branch; reload/resume and fork restore; new sessi
 	const rootId = manager.appendMessage({ role: "assistant", content: [], api: "openai-completions", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() });
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
 	await h.select(f.repo); const repoId = manager.getLeafId();
-	await h.select(f.plain); assert.ok(h.text().includes(`Active: ${f.plain}`));
+	await h.select(f.plain); assert.ok(row(h.text(), "ACTIVE").includes(shown(f.plain)));
 	manager.branch(repoId);
 	await h.runner.emit({ type: "session_tree", newLeafId: repoId, oldLeafId: null });
-	assert.ok(h.text().includes(`Active: ${f.repo}`));
-	assert.ok(h.text().includes(`Launch: ${f.launch}`));
+	assert.ok(row(h.text(), "ACTIVE").includes(shown(f.repo)));
+	assert.ok(row(h.text(), "LAUNCH").includes(shown(f.launch)));
 	// Persist an entry on the selected branch: a leaf pointer alone is not a
 	// durable session-file change when later reopened by SessionManager.open.
 	manager.appendCustomEntry("fixture-selected-branch", {});
 	await h.stop("reload"); h.runner.invalidate();
 	const restored = await harness(f, manager); t.after(() => restored.stop()); await restored.emitStart("reload");
-	assert.ok(restored.text().includes(`Active: ${f.repo}`));
+	assert.ok(row(restored.text(), "ACTIVE").includes(shown(f.repo)));
 	const resumed = await harness(f, host.SessionManager.open(manager.getSessionFile())); t.after(() => resumed.stop()); await resumed.emitStart("resume");
-	assert.ok(resumed.text().includes(`Active: ${f.repo}`));
+	assert.ok(row(resumed.text(), "ACTIVE").includes(shown(f.repo)));
 	const forkManager = host.SessionManager.forkFrom(manager.getSessionFile(), f.launch, join(f.root, "forks"));
 	const forked = await harness(f, forkManager); t.after(() => forked.stop()); await forked.emitStart("fork");
-	assert.ok(forked.text().includes(`Active: ${f.repo}`));
+	assert.ok(row(forked.text(), "ACTIVE").includes(shown(f.repo)));
 	manager.branch(rootId); await restored.runner.emit({ type: "session_tree", newLeafId: rootId, oldLeafId: repoId });
-	assert.ok(restored.text().includes(`Active: ${f.launch}`));
+	assert.ok(row(restored.text(), "ACTIVE").includes(shown(f.launch)));
 	const fresh = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => fresh.stop()); await fresh.emitStart("new");
-	assert.ok(fresh.text().includes(`Active: ${f.launch}`));
+	assert.ok(row(fresh.text(), "ACTIVE").includes(shown(f.launch)));
 });
 
 test("live context/model/statuses; local tool refresh, stale completions and owner disposal", async (t) => {
 	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch);
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
-	await h.select(f.repo); await until(() => /release · clean/.test(h.text()));
+	await h.select(f.repo); await until(() => /release {3}clean/.test(h.text()));
 	await writeFile(join(f.repo, "untracked"), "changed");
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "external-write", toolName: "write", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release · modified/.test(h.text()));
+	await until(() => /release {3}modified/.test(h.text()));
 	h.statuses.set("second", "Second extension status"); h.changeModel();
 	assert.match(h.text(), /Ponytail ready/); assert.match(h.text(), /Second extension status/);
-	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /Context: \?\/128k/);
+	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), / \?\/128k {3}\? UNKNOWN/);
 	await writeFile(join(f.second, ".slow-git"), "delay");
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
-	await until(() => h.text().split("\n").includes(`Active: ${f.plain}`)); await sleep(700);
-	assert.ok(h.text().includes(`Active: ${f.plain}`)); assert.doesNotMatch(h.text(), /Main:|release|Not a Git repository|No GitHub remote/);
+	const plainOnly = new RegExp(`02 ACTIVE +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +▐`);
+	await until(() => plainOnly.test(h.text())); await sleep(700);
+	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /MAIN|release|GITHUB|Not a Git repository|No GitHub remote/);
 	await h.select(f.second); await sleep(30); const priorRenders = h.renders;
 	await h.stop(); h.runner.invalidate(); await sleep(700);
 	assert.equal(h.renders, priorRenders); assert.equal(h.component, undefined); assert.deepEqual(h.errors, []);
@@ -180,7 +192,7 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release · clean/.test(h.text()) && /^GitHub: fixture\/status-bar$/m.test(h.text()));
+	await until(() => /release {3}clean/.test(h.text()) && /^┏━ GITHUB fixture\/status-bar ─/m.test(h.text()));
 	assert.equal(await f.count(f.ghLog), 1);
 	assert.deepEqual(h.errors, []);
 });
@@ -213,4 +225,47 @@ test("session-scoped 15s refresh and repo/branch PR TTL; tree keeps cache, switc
 	const gitCount = await f.count(f.gitLog); t.mock.timers.tick(120_000); await sleep(300);
 	assert.equal(await f.count(f.gitLog), gitCount, "shutdown clears polling and pending work");
 	assert.deepEqual(h.errors, []);
+});
+
+test("decorative motion: footer-owned unref'd timer, session /footer-motion, live values and disposal without extra I/O", async (t) => {
+	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch);
+	const refTimers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+	const h = await harness(f, manager); t.after(() => h.stop());
+	const baseline = refTimers();
+	await h.emitStart(); await until(() => /02 ACTIVE +\S+\/launch +▐/.test(h.text())); await sleep(200);
+	const local = await f.count(f.gitLog), remote = await f.count(f.ghLog);
+	let renders = h.renders; await sleep(600);
+	assert.ok(h.renders > renders, "decoration repaints itself while motion is on");
+	assert.equal(refTimers(), baseline, "animation and refresh timers are unref'd");
+	assert.equal(await f.count(f.gitLog), local, "animation never inspects Git");
+	assert.equal(await f.count(f.ghLog), remote, "animation never queries GitHub");
+	h.setUsage({ tokens: 120_000, contextWindow: 128_000, percent: 93.75 });
+	assert.match(h.text(), / 93\.8%\/128k {3}▲ HIGH/, "a tone change shows the current value immediately, mid-wipe");
+
+	const cleared = t.mock.method(globalThis, "clearTimeout");
+	await h.motion("off");
+	assert.ok(cleared.mock.callCount() >= 1, "pausing clears the pending animation timeout"); cleared.mock.restore();
+	assert.deepEqual(h.notices.at(-1), ["info", "Footer motion off for this session"]);
+	const settled = h.text(); renders = h.renders;
+	assert.match(settled.split("\n")[0], /━┓$/, "settled frame is fully drawn");
+	await sleep(600);
+	assert.equal(h.renders, renders, "motion off leaves no repaint timer"); assert.equal(h.text(), settled);
+	h.setUsage({ tokens: null, contextWindow: 128_000, percent: null });
+	assert.match(h.text(), / \?\/128k {3}\? UNKNOWN/, "live values still update with motion off");
+	await h.motion("sideways");
+	assert.deepEqual(h.notices.at(-1), ["warning", "Usage: /footer-motion [on|off]"]);
+	await sleep(300); assert.equal(h.renders, renders, "invalid arguments leave motion unchanged");
+	await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
+	await sleep(300); renders = h.renders; // the restore's own local refresh may repaint once
+	await sleep(600); assert.equal(h.renders, renders, "same-session tree restore keeps the motion choice");
+
+	await h.motion(""); renders = h.renders; await sleep(600);
+	assert.ok(h.renders > renders, "empty argument toggles motion back on");
+	assert.equal(h.runner.getCommand("footer-motion").getArgumentCompletions("o").map((item: any) => item.value).join(), "on,off");
+	await h.stop(); h.runner.invalidate(); renders = h.renders; await sleep(600);
+	assert.equal(h.renders, renders, "shutdown disposes the animation timer");
+	const fresh = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => fresh.stop());
+	await fresh.emitStart(); renders = fresh.renders; await sleep(600);
+	assert.ok(fresh.renders > renders, "a new session starts with motion on");
+	assert.deepEqual([...h.errors, ...fresh.errors], []);
 });
