@@ -737,14 +737,15 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	// Pi's working directory never follows Active; name it only when they differ (exact stored paths).
 	const cwd = snapshot.launchPath === snapshot.activePath ? undefined
 		: paint("cwd ", settleStyle({ fg: "secondary" }, BOOT_AT.launch)) + pathPaint(displayPath(snapshot.launchPath, snapshot.homePath), { fg: "secondary" }, BOOT_AT.launch);
+	// A square marks every GitHub title: acid for a known repository, otherwise the state text's own color.
 	let title: string | undefined;
 	if (github?.kind === "repository") {
 		const pr = snapshot.pullRequest, name = safeText(github.name), settle = BOOT_AT.github + (name.split(sep).length - 1) * 2;
-		title = pathPaint(name, { bold: true }, BOOT_AT.github);
+		title = paint("■", settleStyle({ fg: "primary" }, BOOT_AT.github)) + gap() + pathPaint(name, { bold: true }, BOOT_AT.github);
 		if (pr.kind === "open") title += paint(" · ", settleStyle({ fg: "secondary" }, settle)) + paint(`PR #${pr.number}`, settleStyle({ bold: true }, settle));
 		else if (pr.kind === "unavailable") title += paint(" · ", { fg: "secondary" }) + paint(`PR unavailable (${safeText(pr.reason)})`, { fg: "warn" });
-	} else if (github?.kind === "unknown") title = paint(`GitHub unavailable (${safeText(github.reason)})`, { fg: "warn" });
-	else if (!github) title = paint("GitHub pending", { fg: "secondary" });
+	} else if (github?.kind === "unknown") title = paint(`■ GitHub unavailable (${safeText(github.reason)})`, { fg: "warn" });
+	else if (!github) title = paint("■ GitHub pending", { fg: "secondary" });
 	// Word emphasis travels word by word; the thinking level latches acid last.
 	const word = (text: string, base: Style, w: number) => {
 		if (!inBoot) return paint(text, base);
@@ -803,8 +804,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		// The lamp is a solid glyph here so wrapping never drops it as blank.
 		const lampText = paint(lamp.ch === " " ? "█" : lamp.ch, lamp.ch === " " ? { fg: lamp.bg, bg: lamp.bg } : lamp);
 		for (const line of wrap(lampText + gap() + paint(" ROOT ", root[0]) + gap() + paint(badge.map((c) => c.ch).join(""), badgeStyle), W)) lines.push(serialize(runPad(line, W)));
+		if (cwd) for (const line of wrap(cwd, W)) lines.push(serialize(runPad(line, W)));
 		add(LABEL.act, PLATE.ok, active);
-		for (const value of [gitDetails, cwd]) if (value) for (const line of wrap(value, W)) lines.push(serialize(runPad(line, W)));
+		if (gitDetails) for (const line of wrap(gitDetails, W)) lines.push(serialize(runPad(line, W)));
 		add(LABEL.ctx, PLATE[tone], chip(readoutText, READOUT_CHIP[tone]) + (tag ? gap() + tag : ""));
 		add(LABEL.mdl, { fg: "field", bg: "text", bold: true }, model);
 		if (ponytailPlate) for (const line of wrap(ponytailPlate, W)) lines.push(serialize(runPad(line, W)));
@@ -843,7 +845,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const block: Part[][] = [];
 	const actRows = fieldRows(plate("act", PLATE.ok, bootWipe(0)), active, BW);
 	plateRows.set("act", block.length); block.push(...actRows);
-	for (const value of [gitDetails, cwd]) if (value) block.push(...fieldRows(undefined, value, BW));
+	if (gitDetails) block.push(...fieldRows(undefined, gitDetails, BW));
 	{
 		let n = Math.min(60, BW - 12), inline = n >= 12 && readoutText.length + 2 <= tickAt(70, n);
 		if (!inline) n = Math.min(60, BW);
@@ -993,18 +995,23 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	}
 	const actRow = ownRow ? header.length - 1 : 0;
 
-	// One blank framed row separates the header from the numbered rows.
-	const body: Part[][] = [blanks(M, "field", true)];
+	// One framed row separates the header from the numbered rows: blank, or Pi's cwd when it differs from Active,
+	// so the numbered plates stay together and the footer height does not change when the agent switches.
+	const body: Part[][] = cwd ? fieldRows(undefined, cwd, FW) : [blanks(M, "field", true)];
 	const blockStart = header.length + body.length;
 	for (const key of ["act", "ctx"] as const) if (plateRows.has(key)) plateRows.set(key, plateRows.get(key)! + blockStart);
 	block.forEach((row, i) => body.push([...row, ...sideCells(i - numeralRow0)]));
 	plateRows.set("mdl", header.length + body.length);
 	const modelPlate = plate("mdl", { fg: "field", bg: "text", bold: true }, bootWipe(3));
-	if (ponytailPlate && visibleWidth(model) + 18 <= FW) {
-		body.push(...fieldRows(modelPlate, model + paint(" ".repeat(FW - visibleWidth(model) - 18), { bg: band }) + ponytailPlate, FW, band));
+	// Content column of PNYTL's left gap. Beside the numeral the white body starts on the digits' first column and
+	// the band continues after its right gap; otherwise the plate right-aligns.
+	const plateAt = numeral ? BW + 3 : Math.max(0, FW - 18);
+	const bandTail = paint(" ".repeat(Math.max(0, FW - plateAt - 18)), { bg: band });
+	if (ponytailPlate && visibleWidth(model) <= plateAt) {
+		body.push(...fieldRows(modelPlate, model + paint(" ".repeat(plateAt - visibleWidth(model)), { bg: band }) + ponytailPlate + bandTail, FW, band));
 	} else {
 		body.push(...fieldRows(modelPlate, model, FW, band));
-		if (ponytailPlate) body.push(...fieldRows(undefined, paint(" ".repeat(Math.max(0, FW - 18)), { bg: band }) + ponytailPlate, FW, band));
+		if (ponytailPlate) body.push(...fieldRows(undefined, paint(" ".repeat(plateAt), { bg: band }) + ponytailPlate + bandTail, FW, band));
 	}
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
