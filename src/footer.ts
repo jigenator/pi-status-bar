@@ -719,8 +719,10 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	/* ---------- field values ---------- */
 	const checkout = (info: CheckoutInfo, branchAt: number, gitAt: number) => {
 		const branch = info.branch ?? `detached${info.revision ? ` @${info.revision}` : ""}`;
-		const status = info.dirty === null ? chip("status unavailable", PLATE.unknown, gitAt) : info.dirty ? chip("modified", PLATE.warn, gitAt) : chip("clean", PLATE.ok, gitAt);
-		return paint("⑂", settleStyle({ fg: "secondary" }, branchAt)) + gap() + pathPaint(safeText(branch), { fg: "secondary" }, branchAt) + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
+		// Colored text, not a plate: a plate would merge with the acid gauge fill directly below.
+		const [label, ink]: [string, Hue] = info.dirty === null ? ["status unavailable", "text"] : info.dirty ? ["modified", "warn"] : ["clean", "primary"];
+		const status = paint(label, settleStyle({ fg: ink, bold: true }, gitAt));
+		return paint("⑂", settleStyle({ fg: "secondary" }, branchAt)) + gap() + pathPaint(safeText(branch), { fg: "secondary" }, branchAt) + gap() + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
 	};
 	const git = snapshot.workspace?.git, github = snapshot.workspace?.github;
 	// A branch identifies its checkout within a repository: Git keeps one branch out of two worktrees and Active
@@ -991,8 +993,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	}
 	const actRow = ownRow ? header.length - 1 : 0;
 
-	const body: Part[][] = [];
-	const blockStart = header.length;
+	// One blank framed row separates the header from the numbered rows.
+	const body: Part[][] = [blanks(M, "field", true)];
+	const blockStart = header.length + body.length;
 	for (const key of ["act", "ctx"] as const) if (plateRows.has(key)) plateRows.set(key, plateRows.get(key)! + blockStart);
 	block.forEach((row, i) => body.push([...row, ...sideCells(i - numeralRow0)]));
 	plateRows.set("mdl", header.length + body.length);
