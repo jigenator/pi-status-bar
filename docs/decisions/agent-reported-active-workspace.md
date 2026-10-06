@@ -23,7 +23,7 @@ Rejected alternatives:
 
 ## Consequences and verification
 
-The prompt guideline asks the agent to signal before deliberate moves and when switching back, but the footer can be stale if the agent forgets. Invalid/cancelled signals preserve state. Session tree navigation restores the latest successful signal on the selected branch; reload, resume, and fork retain it, while a new session starts at Launch.
+The prompt guideline asks the agent to signal before deliberate moves and when switching back, but the footer can be stale if the agent forgets. Because Active never changes execution, the footer names Launch (as `cwd`) whenever it differs from Active: that is when tools and loaded instructions come from somewhere other than the reported project. Invalid/cancelled signals preserve state. Session tree navigation restores the latest successful signal on the selected branch; reload, resume, and fork retain it, while a new session starts at Launch.
 
 `test/extension.test.ts` verifies display-only behavior, invalid/aborted calls, branch-relative restoration, reload/resume/fork, fresh-session reset, and stale-work ownership.
 
