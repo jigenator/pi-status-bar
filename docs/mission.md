@@ -11,7 +11,7 @@ Pi Status Bar provides a compact, truthful footer that separates the fixed launc
 Goals:
 
 - Keep Launch fixed for the session and show Active independently.
-- Show active and repository-primary checkout Git state without confusing the launch directory for the primary checkout.
+- Show Active's directory first, followed by its Git state; retain primary-checkout information in workspace inspection data without adding a footer row.
 - Distinguish absence from unavailable/unknown Git and GitHub information.
 - Preserve current context, model, thinking level, and extension status information. Recognized Ponytail status is represented once in its dedicated PNYTL plate; unknown warnings and every other status stay visible.
 - Always show how many successful compactions are persisted on the selected session branch (CMP), keeping Unknown distinct from zero.
@@ -35,5 +35,5 @@ Success is represented by deterministic coverage of the workspace, renderer, and
 - The runtime uses Node.js standard library plus host-provided Pi, Pi TUI, and TypeBox peers; no bundled runtime dependencies.
 - Local Git and `gh` operations are read-only, bounded, cancellable, and outside render. Decoration timers only advance pure motion memory and request repaints; optional public fleet requests are independently bounded and disposed.
 - Active selection is session-local and follows the selected session branch; it must not leak to a new session.
-- Missing tools, auth, network, checkout metadata, or malformed external responses remain visible as unavailable states.
+- Missing tools, auth, network, active-checkout metadata, or malformed external responses remain visible as unavailable states; primary-checkout failures remain in workspace inspection data, not the footer.
 - The extension must continue to work in non-TUI Pi modes even though no footer is installed.

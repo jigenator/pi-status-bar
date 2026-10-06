@@ -649,3 +649,28 @@ test("PNYTL live status/motion: immediate idle changes, no activity-only flashes
 	const count = h.requests.length; for (let n = 0; n < 30; n++) h.text(); assert.equal(h.requests.length, count);
 	assert.deepEqual(h.errors, []);
 });
+
+
+test("PNYTL observer and directory-first linked-worktree selection preserve both footer features", async (t) => {
+	const f = await fixtures(t), checkout = join(f.root, "linked-footer-worktree");
+	f.runGit(f.repo, ["worktree", "add", "-b", "feat/footer-ponytail", checkout]);
+	const manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager, "tui", { emptyStatuses: true });
+	t.after(() => h.stop()); await h.emitStart(); await h.motion("off");
+	await h.select(checkout); await until(() => /feat\/footer-ponytail {3}clean/.test(h.text()));
+	h.setStatus("other", "Other extension retained");
+	for (const [raw, expected] of [[ponytailText("full"), "FUL"], [undefined, "OFF"], ["warning: Ponytail unavailable", "UNK"]] as const) {
+		h.setStatus("ponytail", raw);
+		assert.equal(ponytailCode(h), expected);
+		const lines = h.text().split("\n"), act = lines.findIndex((line) => line.includes("02 ACT"));
+		assert.ok(lines[act].includes(shown(checkout)));
+		assert.doesNotMatch(lines[act], /feat\/footer-ponytail|clean|⑂/);
+		assert.match(lines[act + 1], /⑂ {3}feat\/footer-ponytail {3}clean/);
+		assert.doesNotMatch(lines[act + 1], /02 ACT/);
+		assert.doesNotMatch(h.text(), /2\.1 MN|release|https:\/\/github\.com/);
+		assert.match(h.text(), /Other extension retained/);
+		if (expected === "UNK") assert.match(h.text(), /warning: Ponytail unavailable/);
+		else assert.doesNotMatch(h.text(), /🐴 ponytail:/);
+	}
+	assert.equal(manager.getCwd(), f.launch, "selection remains display-only");
+	assert.deepEqual(h.errors, []);
+});

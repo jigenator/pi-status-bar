@@ -118,7 +118,7 @@ The workspace contract uses discriminated unions:
 - GitHub: validated `repository`, explicit `none`, or `unknown`.
 - PR: validated `open`, successful `none`, `unavailable`, or `not-applicable`.
 
-`dirty: null`, missing revision, detached branch, and unavailable primary checkout each have distinct meanings. `branch: null` is reserved for confirmed detached HEAD (`symbolic-ref` exit 1); a failed active-branch lookup makes Git and PR unavailable, while a failed primary-branch lookup makes only the Main information unavailable. GitHub API output is accepted only when repository identities, head branch, URL, state, count, and page bounds validate.
+`dirty: null`, missing revision, detached branch, and unavailable primary checkout each have distinct meanings. `branch: null` is reserved for confirmed detached HEAD (`symbolic-ref` exit 1); a failed active-branch lookup makes Git and PR unavailable, while a failed primary-branch lookup makes only the primary-checkout information in workspace inspection data unavailable. GitHub API output is accepted only when repository identities, head branch, URL, state, count, and page bounds validate.
 
 ## Critical invariants
 
@@ -138,6 +138,8 @@ The workspace contract uses discriminated unions:
 ## Where the next change belongs
 
 A new workspace status field starts in the appropriate `WorkspaceInfo` union and inspection logic in `src/workspace.ts`, with boundary/failure tests in `test/workspace.test.ts`. If it is displayed, extend `FooterSnapshot`/`renderFooter` and renderer tests. Only change `src/extension.ts` when collection cadence, persistence, or lifecycle orchestration changes; then add real-host integration coverage.
+
+The footer shows Launch and Active parent/current paths independently. Active Git details wrap on an unnumbered continuation after the complete Active path; the header keeps repository and PR number but omits the full PR URL. Primary-checkout metadata remains part of the workspace result contract and inspection flow, but is not rendered or targeted by footer motion.
 
 A new footer-only presentation state belongs in `src/footer.ts` and must use a supplied snapshot, never call Git or `gh`. A new host lifecycle behavior belongs in `src/extension.ts` and must preserve disposal and stale-result guards. Do not expose private parsers or add a generic service layer merely to pass data across these existing seams.
 

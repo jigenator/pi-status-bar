@@ -14,16 +14,15 @@ The visual language is the selected Marathon-inspired “01 — Acid / Black” 
 
 `/footer-motion [on|off]` is the only user control. An empty argument toggles. It settles or resumes decoration for the current session only, is not persisted, and never freezes live values.
 
-The header always opens with an eight-cell **CMP** plate: the number of successful compactions persisted on the selected session branch, as ` CMP×00 `…` CMP×99 `, ` CMP×99+` above 99 (the `+` takes the trailing pad cell) or ` CMP×?? ` when unknown; `×` is the multiplication sign. CMP shows in plain folders and repositories without GitHub too. Beside it, on the content column of the rows below, the header carries `owner/repository`, then any open PR number and URL or a PR unavailable reason. Repository-less lookups say `GitHub pending` or `GitHub unavailable (reason)` so they cannot be read as a CMP state. When no GitHub remote exists, the plate stands alone without repository text. Rows then appear in this order:
+The header always opens with an eight-cell **CMP** plate: the number of successful compactions persisted on the selected session branch, as ` CMP×00 `…` CMP×99 `, ` CMP×99+` above 99 (the `+` takes the trailing pad cell) or ` CMP×?? ` when unknown; `×` is the multiplication sign. CMP shows in plain folders and repositories without GitHub too. Beside it, on the content column of the rows below, the header carries `owner/repository`, then any open PR number or a PR unavailable reason. Repository-less lookups say `GitHub pending` or `GitHub unavailable (reason)` so they cannot be read as a CMP state. When no GitHub remote exists, the plate stands alone without repository text. Rows then appear in this order:
 
 1. ` 01 LDR ` path.
-2. ` 02 ACT ` path, with branch and clean/modified/unavailable chips, Git pending, or Git unavailable; no Git suffix for a plain directory.
-3. ` 2.1 MN ` only when the repository's primary checkout is distinct, or when it is unavailable.
-4. ` 03 CTX ` gauge with protected inline readout and WARN/HIGH/UNKNOWN tag; at 100+ columns, when content fits, a tick-free number scale and three-row numeral sit beside the Active/Main/context block.
-5. ` 04 MDL ` provider/model and thinking level on the model band; the white ` ⌑ PNYTL // LTE ` plate right-aligns when the natural model fits, otherwise continues on its own band row before EXT.
-6. ` 05 EXT ` plus one or more rows for other extension statuses, verbatim and sorted by status key. Recognized key `ponytail` is represented by PNYTL instead; unrecognized Ponytail text stays in EXT.
+2. ` 02 ACT ` path. Immediately below the complete path (after any wrapping), an unnumbered Git-details continuation shows a small grey `⑂` (U+2442) plate, the existing white plate with dark branch text, and the colored clean/modified/status-unavailable plate. Git pending or Git unavailable messages occupy this same continuation; a plain directory has no Git line. Primary-checkout paths, state and unavailable messages are not rendered.
+3. ` 03 CTX ` gauge with protected inline readout and WARN/HIGH/UNKNOWN tag; at 100+ columns, when content fits, a tick-free number scale and three-row numeral sit beside the Git-details/context block.
+4. ` 04 MDL ` provider/model and thinking level on the model band; the white ` ⌑ PNYTL // LTE ` plate right-aligns when the natural model fits, otherwise continues on its own band row before EXT.
+5. ` 05 EXT ` plus one or more rows for other extension statuses, verbatim and sorted by status key. Recognized key `ponytail` is represented by PNYTL instead; unrecognized Ponytail text stays in EXT.
 
-Launch, Active, and Main show only the immediate parent and current directory, for example `Projects/pi-status-bar`. Home itself is `~` and a direct child of home is `~/name`. Root, a single component, and two-component paths are shown in full because nothing would be elided; relative values are shown as given. GitHub shows only `owner/repository`, without repeating its repository URL. PR numbers/URLs appear when an open PR is found; confirmed absence and not-applicable states have no PR suffix. These are display transformations only; stored paths and lookup URLs stay absolute/full. Distinct paths can share the same parent/current display; that ancestry loss is the approved trade-off.
+Launch and Active show only the immediate parent and current directory, for example `Projects/pi-status-bar`. Home itself is `~` and a direct child of home is `~/name`. Root, a single component, and two-component paths are shown in full because nothing would be elided; relative values are shown as given. GitHub shows only `owner/repository`, without repeating its repository URL. Only PR numbers appear when an open PR is found; full PR URLs are omitted at every width. Confirmed absence and not-applicable states have no PR suffix. These are display transformations only; stored paths and lookup URLs stay absolute/full. Distinct paths can share the same parent/current display; that ancestry loss is the approved trade-off.
 
 Layouts respond to width: wrapped repository/PR lines stay on the same content column as the first line; 100+ columns may show the large context numeral; 40–99 columns keep the padded eight-cell numbered plates and use a compact gauge. The track's inline readout has one real blank cell on each side, including Unknown. The number scale retains as many labels (`0 10 … 70 … 90 100`) as fit without ruler ticks. Below 40 columns a minimal fallback keeps every field with wrapped inline labels, starting with the CMP plate. Values wrap rather than truncate. Continuation rows leave the plate column plain, without colored tabs. Corners and side stubs remain; there is no continuous top rule.
 
@@ -65,13 +64,13 @@ Paths, branches, URLs, errors, and status content are treated as untrusted termi
 
 | State | Display behavior |
 | --- | --- |
-| Initial/local refresh | Active remains visible with Git pending and `GitHub pending` beside the CMP plate until a snapshot arrives |
+| Initial/local refresh | Active remains visible with Git pending below its path and `GitHub pending` beside the CMP plate until a snapshot arrives |
 | Plain directory | Paths and the CMP plate; omit Git absence text and repository text |
 | Git repository without GitHub | Branch plus clean/modified/unavailable chip; CMP plate without repository text |
 | Compaction count 0 / 1–2 / 3–4 / 5–99 / 100+ / unknown | ` CMP×00 ` grey / violet / pink / red-orange plate; ` CMP×99+`; grey ` CMP×?? `, never zero |
-| Linked worktree | Active checkout and distinct ` 2.1 MN ` primary checkout each show their own branch/status |
+| Linked worktree | Active path followed by its Git details; primary-checkout information remains in workspace inspection data only |
 | Detached or unborn checkout | Detached revision when available, or branch with no revision; never fabricate a branch |
-| Open PR | Repository and validated PR number/URL in the frame title |
+| Open PR | Repository and validated PR number in the frame title, without the URL |
 | No open PR or PR not applicable | Repository name only; omit the PR field and separator |
 | Integration failure | Explicit Git/GitHub/PR unavailable reason; no success-shaped fallback |
 | Context 0 / warning / high / unknown | Empty gauge / amber plate and `▲ WARN` / red plate and `▲ HIGH` / grey plate, hatch and `? UNKNOWN` |
@@ -85,4 +84,4 @@ Automated checks cover the selected palette and layouts, CMP formatting/color pa
 
 PNYTL coverage adds seven states, widths 1–280, native truecolor/256-color conversion, static plate cells through boot/ambient events, seeded random subsets, interruption/late-wake/toggle guards, and rolling one-second pulse counts. Real loader/runner tests exercise exact styled status text, explicit clear versus absence, both load orders, warning retention, motion-off changes and wrapper disposal/chaining. A separate isolated check uses the actual Ponytail 4.13.0 producer. Local xterm/WebGL evidence uses actual production-renderer ANSI, not a browser indicator overlay.
 
-Not yet verified: subjective rendering and motion in a live interactive terminal, 256-color fidelity on real terminals, Windows behavior, live fleet-owner activity, and a real authenticated GitHub response. Lifecycle tests use the real installed Pi loader/bus with offline, asynchronous fleet replies and errors/timeouts. There is no open design proposal to automate Active; revisit only if explicit signaling proves unreliable and a trustworthy non-incidental signal becomes available.
+Not yet verified: `⑂` font fidelity in a live terminal, subjective rendering and motion in a live interactive terminal, 256-color fidelity on real terminals, Windows behavior, live fleet-owner activity, and a real authenticated GitHub response. Lifecycle tests use the real installed Pi loader/bus with offline, asynchronous fleet replies and errors/timeouts. There is no open design proposal to automate Active; revisit only if explicit signaling proves unreliable and a trustworthy non-incidental signal becomes available.
