@@ -3,6 +3,9 @@ import type { ContextUsage, Theme } from "@earendil-works/pi-coding-agent";
 import { backgroundAnsi, foregroundAnsi, rgbColor, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { CheckoutInfo, PullRequestInfo, WorkspaceInfo } from "./workspace.ts";
 
+/** Confirmed producer modes, distinct from checking/unavailable display state. */
+export type PonytailMode = "off" | "lite" | "full" | "ultra" | "review";
+export type PonytailState = PonytailMode | "checking" | "unknown";
 /** Root session state and native active-work units. Absent activity or null units are unknown, never zero. */
 export type FooterActivity = { working: boolean; units: number | null };
 export type FooterSnapshot = {
@@ -16,6 +19,8 @@ export type FooterSnapshot = {
 	thinking: string;
 	statuses: ReadonlyMap<string, string>;
 	activity?: FooterActivity;
+	/** Optional for renderer compatibility; the native adapter always supplies a state. */
+	ponytail?: PonytailState;
 	/** Successful persisted compactions on the selected branch. Absent, null or invalid is unknown, never zero. */
 	compactions?: number | null;
 };
@@ -68,12 +73,22 @@ const C = {
 	warn: rgbColor(0xd7, 0x9e, 0x52),
 	high: rgbColor(0xf2, 0x47, 0x23),
 	graphic: rgbColor(0x71, 0x71, 0x71),
+	cobalt: rgbColor(0x00, 0x4f, 0xe8), // PNYTL LTE
+	magenta: rgbColor(0xc0, 0x00, 0x92), // PNYTL ULT
+	teal: rgbColor(0x00, 0x6e, 0x70), // PNYTL REV
 	violet: rgbColor(0x52, 0x00, 0xff), // CMP 1–2
 	pink: rgbColor(0xff, 0x15, 0xbd), // CMP 3–4
 	wz: rgbColor(0x2b, 0x20, 0x10), // 20% warning over the field
 	hz: rgbColor(0x30, 0x0e, 0x07), // 20% high over the field
 };
 type Hue = keyof typeof C;
+const PONYTAIL: Record<PonytailState, { code: string; ink: Hue }> = {
+	lite: { code: "LTE", ink: "cobalt" }, full: { code: "FUL", ink: "violet" }, ultra: { code: "ULT", ink: "magenta" },
+	review: { code: "REV", ink: "teal" }, off: { code: "OFF", ink: "plate" },
+	checking: { code: "CHK", ink: "plate" }, unknown: { code: "UNK", ink: "plate" },
+};
+const confirmedPonytail = (value: PonytailState | undefined): PonytailMode | undefined =>
+	value === "checking" || value === "unknown" ? undefined : value;
 const RESET = "\x1b[0m";
 
 export type Tone = "ok" | "warn" | "high" | "unknown";
@@ -239,6 +254,11 @@ export type MotionState = Readonly<{
 	strikeAt: number;
 	working: boolean;
 	units: number;
+	ponytail?: PonytailState;
+	ponytailKnown?: PonytailMode;
+	/** Retained by the adapter across decoration/component resets. */
+	ponytailGuardUntil: number;
+	ponytailBurst?: { at: number; masks: readonly [number, number] };
 }>;
 /** Everything the renderer needs for one decoration frame; values are never part of it. */
 export type FooterFrame = Readonly<{
@@ -254,6 +274,8 @@ export type FooterFrame = Readonly<{
 	ghosts?: { k: number; items: readonly MotionItem[] };
 	strike?: { k: number; items: readonly MotionItem[] };
 	pulse: number | null;
+	/** Only current mode-letter foregrounds; never plate geometry or semantic text. */
+	ponytailMask?: number;
 }>;
 export const SETTLED_FRAME: FooterFrame = Object.freeze({ boot: Infinity, bootSeed: 0, cal: 0, tagFlash: false, flash70: false, flash90: false, pulse: null });
 
@@ -270,12 +292,13 @@ function displayedNumeral(s: MotionState, now: number): NumeralGrid {
 }
 
 /** Starts decoration memory. `boot` plays the install sequence; false resumes settled (motion turned back on). */
-export function startMotion(snapshot: FooterSnapshot, now: number, seed: number, boot: boolean): MotionState {
+export function startMotion(snapshot: FooterSnapshot, now: number, seed: number, boot: boolean, ponytailGuardUntil = 0): MotionState {
 	const r = random(seed), { percent, windowText } = contextOf(snapshot), level = levelOf(percent);
 	const ghostDelay = boot ? BOOT_GHOST_DELAY : RESUME_GHOST_DELAY;
 	const quiet = boot ? now + (BOOT_TICKS + 1) * TICK : now;
 	const state: MotionState = {
 		cursor: 0, epoch: now, windowText, percent, crossed: {},
+		ponytail: snapshot.ponytail, ponytailKnown: confirmedPonytail(snapshot.ponytail), ponytailGuardUntil,
 		boot: boot ? { at: now, seed: seedFrom(r) } : undefined,
 		numeral: boot ? { from: emptyGrid(13), at: now + NUM_BOOT_T0 * TICK, dur: NUM_MS, seed: seedFrom(r) } : undefined,
 		glitchAt: level ? quiet + between(r, GLITCH[level].wait) * 0.5 : Infinity,
@@ -306,6 +329,28 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 	if (next.glitch && ticksSince(next.glitch.at, now) >= next.glitch.frames) set("glitch", undefined);
 	if (next.ghost && ticksSince(next.ghost.at, now) >= next.ghost.dur) set("ghost", undefined);
 	if (next.strike && ticksSince(next.strike.at, now) >= next.strike.dur) set("strike", undefined);
+
+	// Two random nonempty subsets, drawn once. No sweep, boot treatment or idle loop.
+	// Reserve 1.8s from start AND 1.1s from every observed burst frame/recovery.
+	// This also protects a late wake recovering a black frame held on screen.
+	if (next.ponytailBurst) {
+		set("ponytailGuardUntil", Math.max(next.ponytailGuardUntil, now + 1100));
+		if (now - next.ponytailBurst.at >= 450) set("ponytailBurst", undefined);
+	}
+	if (snapshot.ponytail !== state.ponytail) {
+		set("ponytailBurst", undefined); // interruption settles latest; never queues a replay
+		const known = confirmedPonytail(snapshot.ponytail);
+		if (known !== undefined) {
+			if (state.ponytailKnown !== undefined && known !== state.ponytailKnown && known !== "off" && now >= next.ponytailGuardUntil) {
+				const first = between(r, [1, 7]);
+				const second = (first + between(r, [1, 6]) - 1) % 7 + 1;
+				set("ponytailBurst", { at: now, masks: [first, second] });
+				set("ponytailGuardUntil", now + 1800);
+			}
+			set("ponytailKnown", known);
+		}
+		set("ponytail", snapshot.ponytail);
+	}
 
 	// Observe the real context value.
 	const { percent, windowText } = contextOf(snapshot);
@@ -356,6 +401,11 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 		boot: Infinity, bootSeed: state.boot?.seed ?? 0, cal: calAt(ticksSince(state.epoch, now)), tagFlash: false, flash70: false, flash90: false,
 		pulse: Math.max(0, ticksSince(state.epoch, now)),
 	};
+	if (state.ponytailBurst) {
+		const elapsed = now - state.ponytailBurst.at;
+		frame.ponytailMask = elapsed >= 100 && elapsed < 200 ? state.ponytailBurst.masks[0]
+			: elapsed >= 350 && elapsed < 450 ? state.ponytailBurst.masks[1] : 0;
+	}
 	if (state.boot && booting(state, now)) frame.boot = Math.max(0, ticksSince(state.boot.at, now));
 	if (state.wipe) {
 		const k = ticksSince(state.wipe.at, now);
@@ -394,6 +444,7 @@ export function nextMotionDelay(state: MotionState, now: number): number {
 	};
 	const inBoot = booting(state, now);
 	if (inBoot) tickOf(state.boot!.at, BOOT_TICKS + 1);
+	if (state.ponytailBurst) tickOf(state.ponytailBurst.at, 9);
 	if (state.numeral) tickOf(state.numeral.at, Math.ceil(state.numeral.dur / TICK));
 	if (state.wipe) tickOf(state.wipe.at, WIPE_TICKS);
 	for (const at of [state.crossed[70], state.crossed[90]]) if (at !== undefined) tickOf(at, FLASH_TICKS);
@@ -696,6 +747,11 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const band: Hue = "surface";
 	const model = (snapshot.model ? word(safeText(snapshot.model.provider), { bold: true, bg: band }, 0) + word("/", { bold: true, bg: band }, -1) + word(safeText(snapshot.model.id), { bold: true, bg: band }, 1) : word("no-model", { bold: true, bg: band }, 0))
 		+ word(" · ", { fg: "secondary", bg: band }, -1) + word("thinking ", { fg: "secondary", bg: band }, 2) + word(safeText(snapshot.thinking), { fg: "primary", bold: true, bg: band }, 3);
+	// Pre-styled run: never eligible for ambient ghosts/re-strikes or boot restyling.
+	const ponytail = snapshot.ponytail && PONYTAIL[snapshot.ponytail];
+	const ponytailPlate = ponytail ? gap() + paint(" ⌑ PNYTL // ", { fg: "field", bg: "text", bold: true })
+		+ [...ponytail.code].map((ch, i) => paint(ch, { fg: confirmedPonytail(snapshot.ponytail) && snapshot.ponytail !== "off" && ((frame.ponytailMask ?? 0) & (1 << i)) ? "field" : ponytail.ink, bg: "text", bold: true })).join("")
+		+ paint(" ", { fg: "field", bg: "text", bold: true }) + gap() : "";
 	const mode = theme.getColorMode();
 	// Keep every status and its own colors; sorting keeps row order stable. Boot settles statuses one after another.
 	const entries = [...snapshot.statuses].sort(([a], [b]) => a.localeCompare(b));
@@ -744,6 +800,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		if (gitDetails) for (const line of wrap(gitDetails, W)) lines.push(serialize(runPad(line, W)));
 		add(LABEL.ctx, PLATE[tone], chip(readoutText, READOUT_CHIP[tone]) + (tag ? gap() + tag : ""));
 		add(LABEL.mdl, { fg: "field", bg: "text", bold: true }, model);
+		if (ponytailPlate) for (const line of wrap(ponytailPlate, W)) lines.push(serialize(runPad(line, W)));
 		statuses.forEach((status, i) => {
 			if (i === 0) add(LABEL.ext, GREY_PLATE, status);
 			else for (const line of wrap(status, W)) lines.push(serialize(runPad(line, W)));
@@ -936,7 +993,13 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	for (const key of ["act", "ctx"] as const) if (plateRows.has(key)) plateRows.set(key, plateRows.get(key)! + blockStart);
 	block.forEach((row, i) => body.push([...row, ...sideCells(i - numeralRow0)]));
 	plateRows.set("mdl", header.length + body.length);
-	body.push(...fieldRows(plate("mdl", { fg: "field", bg: "text", bold: true }, bootWipe(4)), model, FW, band));
+	const modelPlate = plate("mdl", { fg: "field", bg: "text", bold: true }, bootWipe(4));
+	if (ponytailPlate && visibleWidth(model) + 18 <= FW) {
+		body.push(...fieldRows(modelPlate, model + paint(" ".repeat(FW - visibleWidth(model) - 18), { bg: band }) + ponytailPlate, FW, band));
+	} else {
+		body.push(...fieldRows(modelPlate, model, FW, band));
+		if (ponytailPlate) body.push(...fieldRows(undefined, paint(" ".repeat(Math.max(0, FW - 18)), { bg: band }) + ponytailPlate, FW, band));
+	}
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
 		body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(5)) : undefined, status, FW));

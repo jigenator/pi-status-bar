@@ -13,7 +13,7 @@ Goals:
 - Keep Launch fixed for the session and show Active independently.
 - Show Active's directory first, followed by its Git state; retain primary-checkout information in workspace inspection data without adding a footer row.
 - Distinguish absence from unavailable/unknown Git and GitHub information.
-- Preserve current context, model, thinking level, and every other extension status.
+- Preserve current context, model, thinking level, and extension status information. Recognized Ponytail status is represented once in its dedicated PNYTL plate; unknown warnings and every other status stay visible.
 - Always show how many successful compactions are persisted on the selected session branch (CMP), keeping Unknown distinct from zero.
 - Show root working state independently from optional native Active Units (AU), including queued work/workflow containers without claiming an exact running-agent count.
 - Remain readable across terminal widths and safe for untrusted repository/path text.

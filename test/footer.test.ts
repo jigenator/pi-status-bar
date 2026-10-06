@@ -1022,3 +1022,204 @@ test("glitch is fill-only: never the readout, the fill edge, unlit track or unkn
 		}
 	}
 });
+
+const ponytailStates = ["lite", "full", "ultra", "off", "review", "checking", "unknown"] as const;
+const ponytailCodes = ["LTE", "FUL", "ULT", "OFF", "REV", "CHK", "UNK"];
+const ponytailInks = ["rgb(0,79,232)", "violet", "rgb(192,0,146)", "plate", "rgb(0,110,112)", "plate", "plate"];
+function ponytailCells(lines: string[]) {
+	const row = grid(lines).find((cells) => text(cells).includes("⌑ PNYTL //"));
+	assert.ok(row);
+	const start = text(row).indexOf("⌑") - 2;
+	return row.slice(start, start + 18);
+}
+
+test("PNYTL: seven exact codes/inks on a static white 16-cell body, optional compatibility and native color conversion", () => {
+	assert.equal(visibleWidth("⌑"), 1);
+	for (const [i, ponytail] of ponytailStates.entries()) {
+		const f = { ...session(), ponytail };
+		for (const width of [30, 48, 80, 100, 120, 280]) {
+			const lines = renderFooter(f, width, theme), cells = ponytailCells(lines);
+			assert.equal(text(cells), `  ⌑ PNYTL // ${ponytailCodes[i]}  `);
+			assert.ok(cells.slice(1, 17).every((c) => c.bg === "text" && c.bold));
+			assert.ok(cells.filter((_, j) => j < 13 || j > 15).every((c, j) => c.bg !== "text" || c.fg === "field"));
+			assert.deepEqual(cells.slice(13, 16).map((c) => c.fg), Array(3).fill(ponytailInks[i]));
+			assert.equal(cells[0].bg, "field"); assert.equal(cells[17].bg, "field");
+			const indexed = renderFooter(f, width, hostTheme("256color"));
+			assert.deepEqual(plain(indexed), plain(lines));
+			assert.doesNotMatch(indexed.join(""), /\x1b\[(38|48);2;/);
+		}
+	}
+	assert.doesNotMatch(rows(session()).join(""), /PNYTL/);
+	for (const hex of ["#004fe8", "#5200ff", "#c00092", "#006e70", "#555555"]) {
+		const ink = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+		assert.ok(1.05 / (luminance(ink) + 0.05) >= 5.74, hex);
+	}
+});
+
+test("PNYTL layout: right of natural model or continuation before EXT, no field truncation at widths 1..280", () => {
+	for (const long of [false, true]) for (const ponytail of ponytailStates) {
+		const f = { ...session(), ponytail };
+		f.model = { ...f.model!, id: long ? "模型👩‍💻" + "long-model-".repeat(10) + "\x1b[2Jend" : "model" };
+		f.statuses = new Map([["ponytail", "\x1b[31mPonytail: ready\x1b[0m"], ["z", "status-".repeat(15)]]);
+		for (let width = 1; width <= 280; width++) {
+			const lines = renderFooter(f, width, theme), out = plain(lines), joined = out.join("").replace(/[\s┃┗┛━┏┓┼]/g, "");
+			assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `${width}/${ponytail}`);
+			assert.doesNotMatch(lines.join(""), /\x1b\[2J/);
+			assert.ok(joined.includes(`⌑PNYTL//${ponytailCodes[ponytailStates.indexOf(ponytail)]}`), `${width}: indicator lost`);
+			assert.ok(joined.includes("Ponytail:ready") && joined.includes("status-".repeat(15)), `${width}: EXT lost`);
+			if (width >= 40) {
+				const mdl = out.findIndex((line: string) => line.includes("04 MDL")), pnytl = out.findIndex((line: string) => line.includes("PNYTL")), ext = out.findIndex((line: string) => line.includes("05 EXT"));
+				assert.ok(pnytl >= mdl && pnytl < ext);
+				const natural = visibleWidth(`openai-codex/${safeText(f.model.id)} · thinking xhigh`), fw = width - (width >= 60 ? 4 : 2) - 9;
+				assert.equal(pnytl === mdl, natural + 18 <= fw);
+			}
+			if (width >= 3) assert.ok(joined.includes(safeText(f.model.id)), `${width}: model lost`);
+		}
+	}
+	const f = { ...session(), ponytail: "full" as const, statuses: new Map() };
+	for (const width of [30, 48, 100, 120, 280]) {
+		const out = rows(f, width).join("\n");
+		assert.match(out, /PNYTL \/\/ FUL/); assert.doesNotMatch(out, /05 EXT/);
+		if (width >= 40) assert.match(out.split("\n").at(-1)!, /┛$/);
+	}
+});
+
+test("PNYTL random plans: deterministic seed, varying nonempty subsets, only three foregrounds change and no ambient/boot overlay", () => {
+	const f = { ...session(), ponytail: "lite" as const };
+	const changed = { ...f, ponytail: "full" as const };
+	const plans = new Set<string>(), firsts = new Set<number>();
+	for (let seed = 1; seed <= 24; seed++) {
+		let s = startMotion(f, 0, seed, false);
+		s = advanceMotion(s, changed, 1000);
+		assert.deepEqual(s, advanceMotion(startMotion(f, 0, seed, false), changed, 1000));
+		const masks = s.ponytailBurst!.masks;
+		assert.ok(masks.every((mask: number) => mask >= 1 && mask <= 7));
+		assert.notEqual(masks[0], masks[1]); plans.add(masks.join()); firsts.add(masks[0]);
+		const settled = ponytailCells(renderFooter(changed, 120, theme));
+		for (let elapsed = 0; elapsed <= 500; elapsed += 50) {
+			s = advanceMotion(s, changed, 1000 + elapsed);
+			const frame = motionFrame(s, 1000 + elapsed);
+			for (const width of [30, 48, 100, 120, 280]) {
+				const cells = ponytailCells(renderFooter(changed, width, theme, frame));
+				assert.equal(text(cells), text(settled), "no stale/scrambled characters");
+				cells.forEach((c, i) => {
+					if (i < 13 || i > 15) assert.deepEqual(c, settled[i], `${seed}/${elapsed}/${i}: fixed plate`);
+					else { assert.deepEqual({ ...c, fg: settled[i].fg }, settled[i]); assert.ok(["field", "violet"].includes(c.fg)); }
+				});
+			}
+		}
+	}
+	assert.ok(plans.size > 10); assert.equal(firsts.size, 7, "no forced left-first acquisition");
+	for (const ponytail of ponytailStates) {
+		const current = { ...f, ponytail }, settled = ponytailCells(renderFooter(current, 120, theme));
+		simulate(current, 17, 20_000, (s, now) => {
+			assert.deepEqual(ponytailCells(renderFooter(current, 120, theme, motionFrame(s, now))), settled, `${ponytail}/${now}: no ambient or boot effects`);
+		});
+		if (["off", "checking", "unknown"].includes(ponytail)) {
+			const s = advanceMotion(startMotion(f, 0, 2, false), current, 1000);
+			assert.equal(s.ponytailBurst, undefined);
+			assert.deepEqual(ponytailCells(renderFooter(current, 120, theme, { ...SETTLED_FRAME, ponytailMask: 7 })), settled);
+		}
+	}
+});
+
+test("PNYTL motion guard: rapid interruption, repeated redraws, same-mode refresh, late recovery and resume do not replay flashes", () => {
+	let f: FooterSnapshot = { ...session(), ponytail: "lite" }, s = startMotion(f, 0, 12, false);
+	f = { ...f, ponytail: "ultra" }; s = advanceMotion(s, f, 1000);
+	assert.ok(s.ponytailBurst);
+	s = advanceMotion(s, f, 1100); assert.ok(motionFrame(s, 1100).ponytailMask);
+	for (let n = 0; n < 100; n++) assert.equal(advanceMotion(s, f, 1100), s);
+	f = { ...f, ponytail: "review" }; s = advanceMotion(s, f, 1150);
+	assert.equal(s.ponytailBurst, undefined, "interrupt settles instead of restarting");
+	for (let now = 1200; now < 2800; now += 50) {
+		f = { ...f, ponytail: now % 100 ? "lite" : "full" }; s = advanceMotion(s, f, now);
+		assert.equal(s.ponytailBurst, undefined);
+	}
+	// A refresh back to the same confirmed mode never flashes, even after the guard.
+	f = { ...f, ponytail: "checking" }; s = advanceMotion(s, f, 4000);
+	f = { ...f, ponytail: "lite" }; s = advanceMotion(s, f, 4300);
+	assert.equal(s.ponytailBurst, undefined);
+	f = { ...f, ponytail: "review" }; s = advanceMotion(s, f, 5000);
+	s = advanceMotion(s, f, 5100); assert.ok(motionFrame(s, 5100).ponytailMask);
+	s = advanceMotion(s, f, 9000); assert.equal(s.ponytailBurst, undefined, "late wake skips missed frames");
+	assert.ok(s.ponytailGuardUntil >= 10100, "late recovery reserves quiet time from actual wake");
+	f = { ...f, ponytail: "ultra" }; s = advanceMotion(s, f, 9100); assert.equal(s.ponytailBurst, undefined);
+	const resumed = startMotion(f, 9200, 3, false, s.ponytailGuardUntil);
+	assert.equal(resumed.ponytailBurst, undefined);
+	assert.equal(advanceMotion(resumed, { ...f, ponytail: "full" }, 9250).ponytailBurst, undefined);
+	assert.equal(motionFrame(resumed, 9300).ponytailMask, undefined);
+});
+
+test("PNYTL rolling one-second pulse budget stays at most two per letter under normal and rapid changes", () => {
+	for (const period of [50, 150, 400, 1800, 2300]) for (let seed = 1; seed <= 8; seed++) {
+		let f: FooterSnapshot = { ...session(), ponytail: "lite" }, s = startMotion(f, 0, seed, false), previous = 0;
+		const flashes: number[][] = [[], [], []];
+		for (let now = 0; now <= 20000; now += 50) {
+			if (now % period === 0) f = { ...f, ponytail: ponytailStates[(now / period) % 5] };
+			s = advanceMotion(s, f, now);
+			const mask = motionFrame(s, now).ponytailMask ?? 0;
+			for (let i = 0; i < 3; i++) {
+				if ((previous & (1 << i)) && !(mask & (1 << i))) flashes[i].push(now);
+				assert.ok(flashes[i].filter((at) => at > now - 1000).length <= 2, `${period}/${seed}/${now}/${i}`);
+			}
+			previous = mask;
+		}
+	}
+});
+
+test("PNYTL transition frames stay width-safe at every width 1..280 and leave unrelated inline cells unchanged", () => {
+	const before = { ...session(), ponytail: "lite" as const }, after = { ...before, ponytail: "full" as const };
+	for (const seed of [1, 2, 7]) {
+		let s = advanceMotion(startMotion(before, 0, seed, false), after, 1000);
+		for (const now of [1000, 1100, 1200, 1350, 1450]) {
+			s = advanceMotion(s, after, now); const frame = motionFrame(s, now);
+			for (let width = 1; width <= 280; width++) {
+				const lines = renderFooter(after, width, theme, frame);
+				assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `${seed}/${now}/${width}`);
+				assert.ok(plain(lines).join("").replace(/[\s┃┗┛━┏┓┼]/g, "").includes("⌑PNYTL//FUL"));
+			}
+			for (const width of [100, 120, 280]) {
+				const absent = { ...after, ponytail: undefined };
+				const baseline = grid(renderFooter(absent, width, theme, frame)), current = grid(renderFooter(after, width, theme, frame));
+				assert.equal(current.length, baseline.length);
+				current.forEach((row, y) => {
+					const indicator = text(row).indexOf("⌑") - 2;
+					row.forEach((cell, x) => { if (indicator < 0 || x < indicator || x >= indicator + 18) assert.deepEqual(cell, baseline[y][x], `${width}/${now}/${x},${y}: unrelated field changed`); });
+				});
+			}
+		}
+	}
+});
+
+
+test("directory-first linked-worktree footer and PNYTL coexist through mode changes and wrapping", () => {
+	const f = fixture();
+	f.activePath = "/Users/example/" + "parent-".repeat(8) + "/" + "current-".repeat(8);
+	repository(f).active.branch = "feat/" + "footer/ponytail/".repeat(4);
+	repository(f).main!.path = "/hidden-primary-checkout";
+	repository(f).main!.branch = "hidden-primary-branch";
+	repository(f).mainUnavailableReason = "hidden-primary-unavailable";
+	const check = (snapshot: FooterSnapshot, width: number, frame: FooterFrame) => {
+		const lines = renderFooter(snapshot, width, theme, frame), out = content(lines);
+		assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `${snapshot.ponytail}@${width}`);
+		assert.doesNotMatch(out, /MN|hidden-primary|https:|github\.com/);
+		assert.ok(out.includes(`⌑PNYTL//${ponytailCodes[ponytailStates.indexOf(snapshot.ponytail!)]}`));
+		assert.ok(out.includes("PR#42") && out.includes("CMP×12") && out.includes("ROOT"));
+		assert.ok(out.replace(/[▓▚▞░]/g, "").includes("03AU"), "AU remains exact through padding textures");
+		assert.ok(out.includes("Otherstatus") && out.includes("Ponytail:ready"), "unrecognized Ponytail status and other keys stay in EXT");
+		assert.ok(out.includes("feat/" + "footer/ponytail/".repeat(4)) && out.includes("modified"));
+		const path = "parent-".repeat(8) + "/" + "current-".repeat(8);
+		assert.ok(out.includes(path) && out.indexOf(path) < out.indexOf("⑂"), `${width}: complete directory before Git details`);
+		if (width >= 40) {
+			const rows = grid(lines), forkRow = rows.findIndex((row) => text(row).includes("⑂"));
+			const { G, P } = metrics(width);
+			assert.ok(rows[forkRow].slice(G, G + P).every((c) => c.ch === " " && c.bg === "field"), "Git details have no ACT continuation plate");
+		}
+	};
+	for (const ponytail of ponytailStates) for (let width = 3; width <= 160; width++) check({ ...f, ponytail }, width, SETTLED_FRAME);
+	const before = { ...f, ponytail: "lite" as const }, after = { ...f, ponytail: "full" as const };
+	const state = advanceMotion(startMotion(before, 0, 279, false), after, 1000);
+	assert.ok(state.ponytailBurst, "real mode transition remains active with the retained plate anchor fix");
+	const frames = [...eventFrames(after), ...[1000, 1100, 1200, 1350, 1450].map((now) => motionFrame(state, now))];
+	for (let width = 3; width <= 160; width++) for (const frame of frames) check(after, width, frame);
+});

@@ -55,6 +55,8 @@ Public compatibility currently consists of the package entry, tool name/schema/d
 
 **Rule:** validate untrusted data at runtime even when typed. Optional fleet RPC must validate protocol, request identity, same-session capability, fleet version and safe nonnegative counts; failure is null/Unknown, never zero. Counts come from the authoritative total, not the bounded entries window. **Example:** GitHub remote URLs and `gh` JSON fields are checked for repository identity, branch, number, state, URL, ambiguity, truncation, and control characters. Tool paths must be non-empty existing directories and are canonicalized. **Reason:** subprocess and tool inputs cross runtime boundaries. **Check:** malformed/spoofed/hostile fixtures in all three test files.
 
+**Rule:** Ponytail status integration consumes only verified, bounded text from key `ponytail`; all other keys and unrecognized Ponytail warnings remain visible. OFF requires an observed explicit clear, never map absence. The narrow public `setStatus` observer must forward original behavior, detach reversibly without overwriting foreign wrappers, and not stack across footer replacements. **Check:** matching real-host status/lifecycle tests in `test/extension.test.ts`; activation and version assumptions in [architecture](architecture.md#ponytail-status-integration).
+
 Use TypeBox only at the Pi tool schema boundary. Do not serialize hidden credentials or raw command stderr into results.
 
 ## Errors and diagnostics
