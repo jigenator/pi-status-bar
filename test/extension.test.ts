@@ -179,6 +179,52 @@ test("tree restoration follows branch; reload/resume and fork restore; new sessi
 	assert.ok(row(fresh.text(), "02 ACT").includes(shown(f.launch)));
 });
 
+// Event fixtures follow the installed host's order (agent-session.js): appendCompaction,
+// then session_compact; failures append nothing; boundary drafts commit with no
+// session_compact before turn_start/agent_end/agent_settled. They do not run the pipeline.
+test("CMP counts persisted active-branch compactions; restores and recounts without per-render walks", async (t) => {
+	const f = await fixtures(t);
+	const manager = host.SessionManager.create(f.launch, join(f.root, "sessions"));
+	manager.appendMessage({ role: "assistant", content: [], api: "openai-completions", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() });
+	const compact = () => manager.getEntry(manager.appendCompaction("summary", manager.getLeafId(), 1000));
+	const cmp = (h: any) => /CMP×(\S+)/.exec(h.text())?.[1];
+	compact(); const base = manager.getLeafId(); // inherited by both branches below
+	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
+	await until(() => !/Git pending/.test(h.text())); await sleep(300); await h.motion("off");
+	assert.equal(cmp(h), "01", "startup restores from the branch");
+	const entry = compact(); let renders = h.renders;
+	const done = { type: "session_compact", compactionEntry: entry, fromExtension: false, reason: "manual", willRetry: false };
+	await h.runner.emit(done);
+	assert.equal(cmp(h), "02"); assert.ok(h.renders > renders, "motion off still repaints current data");
+	renders = h.renders; await h.runner.emit(done); await h.runner.emit({ ...done, reason: "threshold" });
+	assert.equal(cmp(h), "02", "duplicate events recount, never increment"); assert.equal(h.renders, renders);
+	for (const aborted of [false, true]) await h.runner.emit({ type: "session_compact_failed", reason: "overflow", errorMessage: aborted ? undefined : "failed", aborted, willRetry: false, fromExtension: false });
+	assert.equal(cmp(h), "02", "failed/cancelled attempts persist nothing");
+	manager.branchWithSummary(base, "abandoned branch summary");
+	await h.runner.emit({ type: "session_tree", newLeafId: manager.getLeafId(), oldLeafId: entry.id });
+	assert.equal(cmp(h), "01", "abandoned sibling and branch_summary are excluded");
+	compact(); await h.runner.emit({ type: "turn_start", turnIndex: 1, timestamp: Date.now() });
+	assert.equal(cmp(h), "02", "turn_end draft is shown on the continuing turn");
+	compact(); await h.runner.emit({ type: "agent_settled" });
+	assert.equal(cmp(h), "03", "agent_before_settle draft is shown at settlement");
+	const walks = t.mock.method(manager, "getBranch");
+	for (let n = 0; n < 30; n++) h.text();
+	assert.equal(walks.mock.callCount(), 0, "render reads the cached count"); walks.mock.restore();
+	await h.stop("reload"); renders = h.renders;
+	const late = compact(); await h.runner.emit({ ...done, compactionEntry: late }); await h.runner.emit({ type: "agent_settled" });
+	assert.equal(h.renders, renders, "events after shutdown cannot update a disposed footer");
+	h.runner.invalidate();
+	const restored = await harness(f, manager); t.after(() => restored.stop()); await restored.emitStart("reload");
+	assert.equal(cmp(restored), "04");
+	const resumed = await harness(f, host.SessionManager.open(manager.getSessionFile())); t.after(() => resumed.stop()); await resumed.emitStart("resume");
+	assert.equal(cmp(resumed), "04");
+	const forked = await harness(f, host.SessionManager.forkFrom(manager.getSessionFile(), f.launch, join(f.root, "forks"))); t.after(() => forked.stop()); await forked.emitStart("fork");
+	assert.equal(cmp(forked), "04");
+	const fresh = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => fresh.stop()); await fresh.emitStart("new");
+	assert.equal(cmp(fresh), "00", "a new session starts at a known zero");
+	assert.deepEqual([...h.errors, ...restored.errors, ...resumed.errors, ...forked.errors, ...fresh.errors], []);
+});
+
 test("live context/model/statuses; local tool refresh, stale completions and owner disposal", async (t) => {
 	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch);
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
@@ -193,7 +239,8 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
 	const plainOnly = new RegExp(`02 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +▐`);
 	await until(() => plainOnly.test(h.text())); await sleep(700);
-	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /2\.1 MN|release|GITHUB|Not a Git repository|No GitHub remote/);
+	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /2\.1 MN|release|GitHub|Not a Git repository|No GitHub remote/);
+	assert.match(h.text(), / CMP×00 /, "CMP stays visible without repository data");
 	await h.select(f.second); await sleep(30); const priorRenders = h.renders;
 	await h.stop(); h.runner.invalidate(); await sleep(700);
 	assert.equal(h.renders, priorRenders); assert.equal(h.component, undefined); assert.deepEqual(h.errors, []);
@@ -210,7 +257,7 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release {3}clean/.test(h.text()) && /GITHUB fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
+	await until(() => /release {3}clean/.test(h.text()) && /CMP×00  fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
 	assert.equal(await f.count(f.ghLog), 1);
 	assert.deepEqual(h.errors, []);
 });
@@ -338,7 +385,7 @@ test("public fleet RPC: async bus delivery, exact AU overflow, independent ROOT 
 	assert.equal(h.requests.length, before, "renders never query the bus");
 	await advance(1_000);
 	assert.equal(h.requests.length, before + 2, "burst coalesces to one ping/status cycle");
-	assert.match(h.text(), /  0 AU /, "confirmed zero is not Unknown");
+	assert.match(h.text(), / 00 AU /, "confirmed zero is not Unknown");
 	units = Number.MAX_SAFE_INTEGER;
 	await advance(5_000);
 	assert.match(h.text(), /9007199254740991 AU/, "never use bounded entries.length or cap the exact total");
@@ -360,7 +407,7 @@ test("public fleet RPC rejects unsupported, malformed, wrong-session and error r
 	t.after(() => h.stop());
 	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(3)));
 	await h.emitStart(); const advance = await activityClock(t, h);
-	assert.match(h.text(), /3 AU/);
+	assert.match(h.text(), / 03 AU /);
 	const cases = [
 		{ method: "ping", data: { ...pingData(manager), version: 2 } },
 		{ method: "ping", data: { ...pingData(manager), capabilities: {} } },
@@ -392,11 +439,11 @@ test("public fleet RPC rejects unsupported, malformed, wrong-session and error r
 	// Previously known values must also disappear when a status request times out.
 	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(7)));
 	h.events.emit("subagents:rpc:v1:ready", pingData(manager)); await advance(1_000);
-	assert.match(h.text(), /7 AU/);
+	assert.match(h.text(), / 07 AU /);
 	let delayed: any;
 	h.setRpc((request) => { if (request.method === "ping") h.reply(request, pingData(manager)); else delayed = request; });
 	await advance(5_000);
-	assert.match(h.text(), /7 AU/, "keep the last sample only while a bounded refresh is pending");
+	assert.match(h.text(), / 07 AU /, "keep the last sample only while a bounded refresh is pending");
 	assert.equal(replyListeners(h), 1);
 	const beforeTimeout = h.requests.length;
 	for (let n = 0; n < 10; n++) await h.runner.emit({ type: "agent_settled" });
@@ -410,7 +457,7 @@ test("public fleet RPC rejects unsupported, malformed, wrong-session and error r
 	await advance(2_000); assert.equal(replyListeners(h), 0); assert.match(h.text(), /\? AU/);
 	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(0)));
 	h.events.emit("subagents:rpc:v1:ready", pingData(manager)); await advance(1_000);
-	assert.match(h.text(), /  0 AU /); assert.equal(replyListeners(h), 0);
+	assert.match(h.text(), / 00 AU /); assert.equal(replyListeners(h), 0);
 	assert.deepEqual(h.errors, []);
 });
 

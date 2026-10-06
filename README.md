@@ -4,7 +4,7 @@ A Pi extension that replaces the default footer with an explicit view of where t
 
 It shows, in a framed Marathon-inspired “Acid / Black” instrument panel with numbered plates:
 
-- GitHub repository and open-pull-request state in the frame title when available;
+- a **CMP** plate that always leads the frame title with the selected session branch's successful compaction count (`CMP×00`–`CMP×99`, `CMP×99+` above 99, `CMP×??` when unknown), followed by the GitHub repository and open-pull-request state when available;
 - fixed **Launch** and agent-reported **Active** paths as their parent/current directories, for example `Projects/pi-status-bar`;
 - active Git branch and clean/modified state;
 - the repository's primary checkout (`2.1 MN`) when Active is a linked worktree;
@@ -32,7 +32,9 @@ The extension gives the agent a `set_active_project({ path })` tool. It should c
 
 Active is an agent declaration, not automatic cwd tracking, so the footer can be stale if the agent forgets to signal a switch. Paths show only their parent/current directories, so checkouts whose last two directory names match look alike; the `set_active_project` result reports the full Active path. GitHub repository detection is local; PR lookup requires a recognizable public GitHub remote plus a working, authenticated `gh` command. It checks the selected remote repository, not outbound PRs from a fork to an upstream repository. Failures are reported as unavailable rather than as clean or no-PR states.
 
-AU is native active work, **not an exact running-agent count**: pi-subagents includes queued/pending work and counts an active workflow container as one. Up to six rail marks accompany the exact uncapped total. Without a compatible owner, or on malformed/error/timeout replies, the badge shows `? AU`, never a fabricated zero. The integration was verified against Pi 1.0.2 and pi-subagents 0.76.0; it uses public in-process events, not an imported dependency or status-text parsing. Samples refresh independently of decoration, normally five seconds after the prior collection finishes, with coalesced turn/tool/ready updates. Motion off does not stop collection. ROOT comes from Pi's `isIdle()` independently of AU, including the post-`agent_end` retry/continuation period.
+AU is native active work, **not an exact running-agent count**: pi-subagents includes queued/pending work and counts an active workflow container as one. Known counts show at least two digits (`00 AU`, `03 AU`, `123 AU`); up to six rail marks accompany the exact uncapped total. Without a compatible owner, or on malformed/error/timeout replies, the badge shows `? AU`, never a fabricated zero. The integration was verified against Pi 1.0.2 and pi-subagents 0.76.0; it uses public in-process events, not an imported dependency or status-text parsing. Samples refresh independently of decoration, normally five seconds after the prior collection finishes, with coalesced turn/tool/ready updates. Motion off does not stop collection. ROOT comes from Pi's `isIdle()` independently of AU, including the post-`agent_end` retry/continuation period.
+
+CMP counts successful compactions persisted on the currently selected session branch, including ones inherited from earlier on that branch; abandoned sibling branches, branch summaries and failed or cancelled compaction attempts are not counted. It is not a context-usage reading. Unknown is `CMP×??`, never a fabricated zero, and counts above 99 deliberately show `CMP×99+` to keep the plate eight cells wide.
 
 No live interactive-terminal/motion or live fleet-owner smoke test is claimed; automated tests use the installed Pi loader and public bus with offline replies.
 

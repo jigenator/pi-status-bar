@@ -14,6 +14,7 @@ Goals:
 - Show active and repository-primary checkout Git state without confusing the launch directory for the primary checkout.
 - Distinguish absence from unavailable/unknown Git and GitHub information.
 - Preserve current context, model, thinking level, and every other extension status.
+- Always show how many successful compactions are persisted on the selected session branch (CMP), keeping Unknown distinct from zero.
 - Show root working state independently from optional native Active Units (AU), including queued work/workflow containers without claiming an exact running-agent count.
 - Remain readable across terminal widths and safe for untrusted repository/path text.
 - Refresh external changes without doing local or network I/O during rendering.

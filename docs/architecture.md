@@ -1,7 +1,7 @@
 # Architecture
 
 Status: current integrated system; no proposed runtime modules.
-Evidence: current `src/` and `test/` files, `package.json`, installed Pi 1.0.2 and pi-subagents 0.76.0 public contracts inspected for the native v9 integration on 2026-10-05.
+Evidence: current `src/` and `test/` files, `package.json`, installed Pi 1.0.2 and pi-subagents 0.76.0 public contracts inspected for the native v9 integration on 2026-10-05; CMP compaction collection verified against installed Pi 1.0.4 on 2026-10-06.
 
 ## System and module map
 
@@ -10,7 +10,7 @@ flowchart LR
   Host[Pi host] -->|loads package entry and emits lifecycle events| Extension[src/extension.ts]
   Extension -->|calls path, Git and PR contract| Workspace[src/workspace.ts]
   Extension -->|passes snapshots for pure rendering| Footer[src/footer.ts]
-  Host -->|context, model, thinking, isIdle and extension statuses| Extension
+  Host -->|context, model, thinking, isIdle, session branch and extension statuses| Extension
   Extension <-->|public ping/status RPC, outside render| Fleet[Optional pi-subagents owner]
   Workspace -->|read-only filesystem and execFile| Local[Filesystem and Git]
   Workspace -->|bounded read-only gh api| GitHub[GitHub via gh]
@@ -21,7 +21,7 @@ flowchart LR
 | Module/path | Purpose | Public entry point | Dependencies |
 | --- | --- | --- | --- |
 | `package.json` | Pi package metadata and test wiring | `pi.extensions[0]` → `src/extension.ts` | Host-provided peer packages |
-| `src/extension.ts` | Pi adapter: tool, motion command, session state, restoration, refresh/cache, cancellation, footer and animation lifecycle | Default extension factory | Public Pi/TypeBox APIs, workspace functions, footer renderer |
+| `src/extension.ts` | Pi adapter: tool, motion command, session state, restoration, compaction count, refresh/cache, cancellation, footer and animation lifecycle | Default extension factory | Public Pi/TypeBox APIs, workspace functions, footer renderer |
 | `src/workspace.ts` | Path normalization and truthful local Git/GitHub/PR inspection | `resolveActivePath`, `inspectWorkspace`, `inspectPullRequest` and result types | Node filesystem/path/child-process only |
 | `src/footer.ts` | Pure, fixed-palette, width-safe, terminal-safe rendering and time-to-decoration frames | `renderFooter`, `safeText`, `FooterSnapshot`, motion functions | Node path helpers, Pi types/TUI color and width helpers, workspace types only |
 | `test/workspace.test.ts` | Domain/contract coverage | Node test file | Disposable Git repositories and fake executables |
@@ -42,7 +42,7 @@ sequenceDiagram
   participant GH as gh or Git
   participant UI as footer.ts
   Pi->>Ext: session_start(context)
-  Ext->>Ext: restore Launch and branch selection
+  Ext->>Ext: restore Launch, branch selection and compaction count
   Ext->>Pi: register TUI footer when applicable
   Ext->>WS: inspectWorkspace(Active, signal)
   WS->>GH: bounded read-only local commands
@@ -56,7 +56,7 @@ sequenceDiagram
   UI-->>Pi: width-bounded terminal-safe lines
 ```
 
-Local inspection runs after tool completion and on a 15-second TUI timer. PR lookup is keyed by repository name/URL and branch with a 60-second TTL; it does not run per redraw or every tool completion. Render reads current context/model/thinking/status values and performs no external work.
+Local inspection runs after tool completion and on a 15-second TUI timer. The compaction count is not polled; see [CMP compaction count](#cmp-compaction-count). PR lookup is keyed by repository name/URL and branch with a 60-second TTL; it does not run per redraw or every tool completion. Render reads current context/model/thinking/status values and performs no external work.
 
 ### Decorative motion
 
@@ -76,6 +76,14 @@ AU means **Active Units**, the owner's native active-work total: running, queued
 
 Contract sources in the installed packages: Pi `docs/extensions.md`, `dist/core/event-bus.{d.ts,js}`, `dist/core/agent-session.js` and `dist/core/extensions/runner.js`; pi-subagents `docs/extension-api.md`, `src/extension/rpc.{d.ts,js}`, `src/extension/index.js` and `src/runs/background/async-job-tracker.js`. Production uses only Pi public imports and the documented event contract.
 
+### CMP compaction count
+
+`FooterSnapshot.compactions` is the number of `type: "compaction"` entries on `ctx.sessionManager.getBranch()`: successful compactions persisted on the selected branch, including ones inherited from before a branch point. Abandoned siblings (other `getEntries()` paths), `branch_summary` entries, context projections and token drops are not counted. Pi appends nothing for failed or cancelled attempts (`session_compact_failed`), so they cannot raise the count.
+
+The count is held in `SessionState` and recounted, never incremented, so duplicate events cannot double-count. `restore` computes it on `session_start` (startup, new, resume, fork, reload) and `session_tree`. Pi's manual and automatic compaction append the entry and then await `session_compact`, which recounts and repaints when the value changed. Extension `turn_end`/`agent_before_settle` boundary drafts can also persist compactions without `session_compact`; they commit before the next `turn_start` (count-only handler) or `agent_end`/`agent_settled` (the existing ROOT handler, which now also recounts). Every recount requires the current, undisposed session and a matching session ID. Render reads the cached number and never walks the branch, so motion off still shows the current count.
+
+Contract sources in installed Pi 1.0.4: `docs/extensions.md` (reconstruct branch state from `getBranch()`), `docs/compaction.md`, `docs/session-format.md`, `dist/core/session-manager.d.ts` (`ReadonlySessionManager.getBranch`, `CompactionEntry`, `BranchSummaryEntry`), `dist/core/extensions/types.d.ts` (`SessionCompactEvent`, `SessionCompactFailedEvent`, `CompactionEntryDraft`, `TurnStartEvent`) and `dist/core/agent-session.js` (`compact`, `_runAutoCompaction`, `_applyBoundaryDrafts`, `_dispatchTurnEndBoundary`, `_runBeforeSettleBoundary`, `_emitAgentSettled`). Integration tests emit these events in the same order against a real session manager; they do not run a model-backed compaction.
+
 ### Active selection and failure behavior
 
 The registered tool resolves a relative path from Launch, validates an existing directory, and normalizes a Git path to its checkout root. Only after successful resolution and ownership/cancellation checks does it replace Active, cancel stale work, and start refresh. The tool result stores `{ version: 1, path }`; Pi persists that result on the current session branch.
@@ -84,9 +92,9 @@ Invalid paths, resolution failures, cancellation, or session replacement throw w
 
 ## Data and contracts
 
-`SessionState` in `src/extension.ts` is authoritative only for the live session: Launch, Active, selection generation, latest workspace/PR snapshots, PR cache, controllers, refresh timer, render callback, motion flag, footer animation, optional fleet collector and nullable AU sample. It is recreated on session start/tree events and disposed on shutdown. A same-session tree restore retains its PR cache and motion choice; a new session receives a new cache, motion on, and Active at Launch.
+`SessionState` in `src/extension.ts` is authoritative only for the live session: Launch, Active, selection generation, latest workspace/PR snapshots, PR cache, controllers, refresh timer, render callback, motion flag, footer animation, optional fleet collector, nullable AU sample and branch compaction count. It is recreated on session start/tree events and disposed on shutdown. A same-session tree restore retains its PR cache and motion choice; a new session receives a new cache, motion on, and Active at Launch.
 
-Durable selection data lives only in successful `set_active_project` tool-result details on the selected Pi session branch. Restoration scans that branch, so abandoned history does not leak into navigation. There is no project/global settings write or cross-session database.
+Durable selection data lives only in successful `set_active_project` tool-result details on the selected Pi session branch. Restoration scans that branch, so abandoned history does not leak into navigation. The compaction count is derived from Pi's own branch entries and is never written by this extension. There is no project/global settings write or cross-session database.
 
 The workspace contract uses discriminated unions:
 
@@ -104,6 +112,7 @@ The workspace contract uses discriminated unions:
 | The primary checkout belongs to Active's repository and is not inferred from Launch | `inspectWorkspace` in `src/workspace.ts` | Linked/missing/replaced-main tests |
 | External errors never become clean/no-PR and raw stderr is not exposed | `command`, `checkout`, `inspectPullRequest` | Failure/redaction tests plus renderer state tests |
 | Rendering performs no I/O and every line fits width | `renderFooter` in `src/footer.ts` | Widths 1–160 in every state/motion frame and pure snapshot tests |
+| CMP counts only persisted compactions on the selected branch, recounted on lifecycle events and never per render | `countCompactions` and `recount` in `src/extension.ts` | CMP integration test: abandoned sibling, branch summary, failures, duplicates, boundary drafts, restoration, shutdown, no render walk |
 | Decoration never changes or delays displayed data and never starts collection | motion functions in `src/footer.ts`, animation and independent collector in `src/extension.ts` | Frame-equality, schedule, command, timer-disposal and no-extra-I/O tests |
 | Untrusted terminal text cannot inject controls; other statuses keep SGR styles | `safeText` in `src/footer.ts` | Hostile-control renderer test |
 | Branch/workspace switches and shutdown cannot accept stale async completions | refresh ownership checks in `src/extension.ts` | Stale work/disposal tests |
