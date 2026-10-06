@@ -4,14 +4,14 @@
 
 Pi users may launch one session from a directory and later work in a different repository or linked worktree. The default footer does not make that distinction explicit, which can obscure where the session began and which checkout the agent considers current.
 
-Pi Status Bar provides a compact, truthful footer that separates the fixed launch location from an explicit agent-reported active project while preserving context/model information and statuses from other extensions.
+Pi Status Bar provides a compact, truthful footer that shows an explicit agent-reported active project, identified by its branch when that is unambiguous, and names Pi's fixed working directory whenever it differs, while preserving context/model information and statuses from other extensions.
 
 ## Goals and non-goals
 
 Goals:
 
-- Keep Launch fixed for the session and show Active independently.
-- Show Active's directory first, followed by its Git state; retain primary-checkout information in workspace inspection data without adding a footer row.
+- Keep Launch, Pi's working directory, fixed for the session; show Active independently and name Launch only when it differs from Active.
+- Identify Active by branch and Git state when it is a named GitHub repository on a known branch; otherwise show its directory first, followed by its Git state. Retain primary-checkout information in workspace inspection data without adding a footer row.
 - Distinguish absence from unavailable/unknown Git and GitHub information.
 - Preserve current context, model, thinking level, and extension status information. Recognized Ponytail status is represented once in its dedicated PNYTL plate; unknown warnings and every other status stay visible.
 - Always show how many successful compactions are persisted on the selected session branch (CMP), keeping Unknown distinct from zero.

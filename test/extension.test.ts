@@ -156,10 +156,10 @@ test("real host supplies home for display without changing absolute selection de
 	process.env.HOME = f.root;
 	const manager = host.SessionManager.inMemory(f.launch);
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
-	// Active starts at Launch, so Launch defers to the ACT path until a deliberate move.
-	assert.match(h.text(), /01 LDR += ACT /); assert.match(h.text(), /02 ACT +~\/launch /);
+	// Active starts at Launch (Pi's cwd), so no cwd line appears until a deliberate move.
+	assert.match(h.text(), /01 ACT +~\/launch /); assert.doesNotMatch(h.text(), /cwd|LDR/);
 	const result = await h.select(f.plain);
-	assert.match(h.text(), /01 LDR +~\/launch /); assert.match(h.text(), /02 ACT +~\/plain ü /);
+	assert.match(h.text(), /01 ACT +~\/plain ü /); assert.match(h.text(), /\n +cwd ~\/launch /);
 	assert.equal(result.details.path, f.plain);
 	assert.equal(manager.getCwd(), f.launch);
 });
@@ -170,26 +170,26 @@ test("tree restoration follows branch; reload/resume and fork restore; new sessi
 	const rootId = manager.appendMessage({ role: "assistant", content: [], api: "openai-completions", provider: "fixture", model: "fixture", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "stop", timestamp: Date.now() });
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
 	await h.select(f.repo); const repoId = manager.getLeafId();
-	await h.select(f.plain); assert.ok(row(h.text(), "02 ACT").includes(shown(f.plain)));
+	await h.select(f.plain); assert.ok(row(h.text(), "01 ACT").includes(shown(f.plain)));
 	manager.branch(repoId);
 	await h.runner.emit({ type: "session_tree", newLeafId: repoId, oldLeafId: null });
-	assert.ok(row(h.text(), "02 ACT").includes(shown(f.repo)));
-	assert.ok(row(h.text(), "01 LDR").includes(shown(f.launch)));
+	assert.ok(row(h.text(), "01 ACT").includes(shown(f.repo)));
+	assert.ok(row(h.text(), "cwd ").includes(shown(f.launch)));
 	// Persist an entry on the selected branch: a leaf pointer alone is not a
 	// durable session-file change when later reopened by SessionManager.open.
 	manager.appendCustomEntry("fixture-selected-branch", {});
 	await h.stop("reload"); h.runner.invalidate();
 	const restored = await harness(f, manager); t.after(() => restored.stop()); await restored.emitStart("reload");
-	assert.ok(row(restored.text(), "02 ACT").includes(shown(f.repo)));
+	assert.ok(row(restored.text(), "01 ACT").includes(shown(f.repo)));
 	const resumed = await harness(f, host.SessionManager.open(manager.getSessionFile())); t.after(() => resumed.stop()); await resumed.emitStart("resume");
-	assert.ok(row(resumed.text(), "02 ACT").includes(shown(f.repo)));
+	assert.ok(row(resumed.text(), "01 ACT").includes(shown(f.repo)));
 	const forkManager = host.SessionManager.forkFrom(manager.getSessionFile(), f.launch, join(f.root, "forks"));
 	const forked = await harness(f, forkManager); t.after(() => forked.stop()); await forked.emitStart("fork");
-	assert.ok(row(forked.text(), "02 ACT").includes(shown(f.repo)));
+	assert.ok(row(forked.text(), "01 ACT").includes(shown(f.repo)));
 	manager.branch(rootId); await restored.runner.emit({ type: "session_tree", newLeafId: rootId, oldLeafId: repoId });
-	assert.ok(row(restored.text(), "02 ACT").includes(shown(f.launch)));
+	assert.ok(row(restored.text(), "01 ACT").includes(shown(f.launch))); assert.doesNotMatch(restored.text(), /cwd /);
 	const fresh = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => fresh.stop()); await fresh.emitStart("new");
-	assert.ok(row(fresh.text(), "02 ACT").includes(shown(f.launch)));
+	assert.ok(row(fresh.text(), "01 ACT").includes(shown(f.launch))); assert.doesNotMatch(fresh.text(), /cwd /);
 });
 
 // Event fixtures follow the installed host's order (agent-session.js): appendCompaction,
@@ -250,7 +250,8 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/);
 	await writeFile(join(f.second, ".slow-git"), "delay");
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
-	const plainOnly = new RegExp(`02 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} +▐`);
+	// The plain path is followed directly by the cwd line: no stale Git details in between.
+	const plainOnly = new RegExp(`01 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ ┃]*\\n +cwd `);
 	await until(() => plainOnly.test(h.text())); await sleep(700);
 	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /2\.1 MN|release|GitHub|Not a Git repository|No GitHub remote/);
 	assert.match(h.text(), / CMP×00 /, "CMP stays visible without repository data");
@@ -270,8 +271,10 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release {2}clean/.test(h.text()) && /CMP×00  fixture /.test(h.text()) && !/PR unavailable/.test(h.text()));
-	assert.doesNotMatch(h.text(), /fixture\/status-bar/, "header shows the owner, not the repository");
+	await until(() => /release {2}clean/.test(h.text()) && /CMP×00  fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
+	// Named repository and known branch: the branch replaces the path on the ACT row.
+	assert.match(row(h.text(), "01 ACT"), /01 ACT {2}⑂ release {2}clean/); assert.doesNotMatch(h.text(), new RegExp(shown(f.repo)));
+	assert.ok(row(h.text(), "cwd ").includes(shown(f.launch)));
 	assert.equal(await f.count(f.ghLog), 1);
 	assert.deepEqual(h.errors, []);
 });
@@ -311,7 +314,7 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	const refTimers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
 	const h = await harness(f, manager); t.after(() => h.stop());
 	const baseline = refTimers();
-	await h.emitStart(); await until(() => /02 ACT +\S+\/launch +▐/.test(h.text())); await sleep(200);
+	await h.emitStart(); await until(() => /01 ACT +\S+\/launch +▐/.test(h.text())); await sleep(200);
 	const local = await f.count(f.gitLog), remote = await f.count(f.ghLog);
 	let renders = h.renders; await sleep(600);
 	assert.ok(h.renders > renders, "decoration repaints itself while motion is on");
@@ -567,7 +570,7 @@ test("PNYTL parses only bounded exact styled format; preserves malformed/warning
 		h.setStatus("ponytail", raw);
 		assert.equal(ponytailCode(h), "UNK", JSON.stringify(raw));
 		assert.equal(h.statuses.get("ponytail"), raw, "host data untouched");
-		assert.match(h.text(), /05 EXT/);
+		assert.match(h.text(), /04 EXT/);
 		assert.doesNotMatch(h.component.render(300).join(""), /\x1b\[2J|\x1b\]|\u202e/);
 	}
 	h.setStatus("ponytail", "warning: FULL unavailable"); assert.match(h.text(), /warning: FULL unavailable/);
@@ -663,11 +666,11 @@ test("PNYTL observer and directory-first linked-worktree selection preserve both
 	for (const [raw, expected] of [[ponytailText("full"), "FUL"], [undefined, "OFF"], ["warning: Ponytail unavailable", "UNK"]] as const) {
 		h.setStatus("ponytail", raw);
 		assert.equal(ponytailCode(h), expected);
-		const lines = h.text().split("\n"), act = lines.findIndex((line) => line.includes("02 ACT"));
+		const lines = h.text().split("\n"), act = lines.findIndex((line) => line.includes("01 ACT"));
 		assert.ok(lines[act].includes(shown(checkout)));
 		assert.doesNotMatch(lines[act], /feat\/footer-ponytail|clean|⑂/);
 		assert.match(lines[act + 1], /⑂ feat\/footer-ponytail {2}clean/);
-		assert.doesNotMatch(lines[act + 1], /02 ACT/);
+		assert.doesNotMatch(lines[act + 1], /01 ACT/); assert.ok(lines[act + 2].includes(`cwd ${shown(f.launch)}`));
 		assert.doesNotMatch(h.text(), /2\.1 MN|release|https:\/\/github\.com/);
 		assert.match(h.text(), /Other extension retained/);
 		if (expected === "UNK") assert.match(h.text(), /warning: Ponytail unavailable/);

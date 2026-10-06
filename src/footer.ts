@@ -93,7 +93,7 @@ const RESET = "\x1b[0m";
 
 export type Tone = "ok" | "warn" | "high" | "unknown";
 type Style = { fg?: Hue; bg?: Hue; bold?: boolean; underline?: boolean };
-type PlateKey = "ldr" | "act" | "ctx" | "mdl" | "ext";
+type PlateKey = "act" | "ctx" | "mdl" | "ext";
 type Zone = "plate" | "digits" | "labels" | "root" | "badge";
 // One terminal column of a renderer-owned glyph. `ghost` admits registration ghosts; `zone` admits re-strikes.
 type Cell = Style & { ch: string; ghost?: boolean; frame?: boolean; zone?: Zone };
@@ -112,7 +112,7 @@ const PLATE: Record<Tone, Style> = {
 const READOUT_CHIP: Record<Tone, Style> = { ...PLATE, ok: { fg: "field", bg: "text", bold: true } };
 const TAG: Record<Tone, string> = { ok: "", warn: "▲ WARN", high: "▲ HIGH", unknown: "? UNKNOWN" };
 const GREY_PLATE: Style = { fg: "text", bg: "plate", bold: true };
-const LABEL = { ldr: "01 LDR", act: "02 ACT", ctx: "03 CTX", mdl: "04 MDL", ext: "05 EXT" } as const;
+const LABEL = { act: "01 ACT", ctx: "02 CTX", mdl: "03 MDL", ext: "04 EXT" } as const;
 
 const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const toneOf = (percent: number | undefined): Tone => percent === undefined ? "unknown" : percent > 90 ? "high" : percent > 70 ? "warn" : "ok";
@@ -500,7 +500,7 @@ function planGhosts(r: Random): MotionItem[] {
 		},
 		() => [ghost({ row: 1, col: 1, colFrom: "mid" }, "┼", "graphic")],
 		() => {
-			const key = pick(r, ["ldr", "act", "ctx", "mdl", "ext"] as const);
+			const key = pick(r, ["act", "ctx", "mdl", "ext"] as const);
 			const out: Omit<Extract<MotionItem, { fam: "ghost" }>, "start">[] = [{ fam: "ghost", at: { row: key, col: 0, colFrom: "plate" }, frames: [{ ch: "▌", fg: "@edge" }, { ch: "▌", fg: "@edge" }] }];
 			if ((key === "act" || key === "ctx") && r() < 0.5) out.push({ fam: "ghost", at: { row: key, col: 1 }, frames: [null, { ch: "▐", fg: "@edgeL" }, { ch: "▐", fg: "@edgeL" }] });
 			return out;
@@ -562,7 +562,7 @@ function panelPatches(r: Random, at: number, items: MotionItem[], state: MotionS
 }
 // Re-strike plan: plates, the large context panel and Thread Rail's ROOT/count badge, in one shuffled order.
 function planRestrike(r: Random, state: MotionState): MotionItem[] {
-	const plates = shuffle(r, (["ldr", "act", "ctx", "mdl", "ext"] as const).filter((key) => !(key === "ctx" && state.wipe)));
+	const plates = shuffle(r, (["act", "ctx", "mdl", "ext"] as const).filter((key) => !(key === "ctx" && state.wipe)));
 	const panel = r() < 0.5;
 	const header = (["root", "badge"] as const).filter(() => r() < 0.5);
 	const units = shuffle<PlateKey | "panel" | "root" | "badge">(r, [...plates.slice(0, 1 + Math.floor(r() * (panel ? 2 : 3))), ...(panel ? ["panel" as const] : []), ...header]);
@@ -722,22 +722,24 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const status = info.dirty === null ? chip("status unavailable", PLATE.unknown, gitAt) : info.dirty ? chip("modified", PLATE.warn, gitAt) : chip("clean", PLATE.ok, gitAt);
 		return paint("⑂", settleStyle({ fg: "secondary" }, branchAt)) + gap() + pathPaint(safeText(branch), { fg: "secondary" }, branchAt) + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
 	};
-	const git = snapshot.workspace?.git;
-	// Exact stored paths, not their parent/current displays, which distinct paths can share.
-	const launchText = snapshot.launchPath === snapshot.activePath ? "= ACT" : displayPath(snapshot.launchPath, snapshot.homePath);
-	const active = pathPaint(displayPath(snapshot.activePath, snapshot.homePath), { bold: true }, BOOT_AT.active);
-	// Directory first: wrap the complete Active path before its unnumbered Git details.
+	const git = snapshot.workspace?.git, github = snapshot.workspace?.github;
+	// A branch identifies its checkout within a repository: Git keeps one branch out of two worktrees and Active
+	// is a checkout root. The title names the repository, so the path is replaced only when both are known.
+	const branchOnly = git?.kind === "repository" && git.active.branch !== null && github?.kind === "repository";
+	const active = branchOnly ? checkout(git.active, BOOT_AT.active, BOOT_AT.git) : pathPaint(displayPath(snapshot.activePath, snapshot.homePath), { bold: true }, BOOT_AT.active);
+	// Otherwise directory first: wrap the complete Active path before its unnumbered Git details.
 	let gitDetails: string | undefined;
-	if (git?.kind === "repository") gitDetails = checkout(git.active, BOOT_AT.branch, BOOT_AT.git);
+	if (git?.kind === "repository" && !branchOnly) gitDetails = checkout(git.active, BOOT_AT.branch, BOOT_AT.git);
 	else if (git?.kind === "unknown") gitDetails = paint(`Git unavailable (${safeText(git.reason)})`, { fg: "warn" });
 	else if (!git) gitDetails = paint("Git pending", { fg: "secondary" });
-	const github = snapshot.workspace?.github;
+	// Pi's working directory never follows Active; name it only when they differ (exact stored paths).
+	const cwd = snapshot.launchPath === snapshot.activePath ? undefined
+		: paint("cwd ", settleStyle({ fg: "secondary" }, BOOT_AT.launch)) + pathPaint(displayPath(snapshot.launchPath, snapshot.homePath), { fg: "secondary" }, BOOT_AT.launch);
 	let title: string | undefined;
 	if (github?.kind === "repository") {
-		// Owner only: Active already shows the checkout directory, which usually repeats the repository name.
-		const pr = snapshot.pullRequest;
-		title = pathPaint(safeText(github.name.split("/")[0]), { bold: true }, BOOT_AT.github);
-		if (pr.kind === "open") title += paint(" · ", settleStyle({ fg: "secondary" }, BOOT_AT.github)) + paint(`PR #${pr.number}`, settleStyle({ bold: true }, BOOT_AT.github));
+		const pr = snapshot.pullRequest, name = safeText(github.name), settle = BOOT_AT.github + (name.split(sep).length - 1) * 2;
+		title = pathPaint(name, { bold: true }, BOOT_AT.github);
+		if (pr.kind === "open") title += paint(" · ", settleStyle({ fg: "secondary" }, settle)) + paint(`PR #${pr.number}`, settleStyle({ bold: true }, settle));
 		else if (pr.kind === "unavailable") title += paint(" · ", { fg: "secondary" }) + paint(`PR unavailable (${safeText(pr.reason)})`, { fg: "warn" });
 	} else if (github?.kind === "unknown") title = paint(`GitHub unavailable (${safeText(github.reason)})`, { fg: "warn" });
 	else if (!github) title = paint("GitHub pending", { fg: "secondary" });
@@ -799,9 +801,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		// The lamp is a solid glyph here so wrapping never drops it as blank.
 		const lampText = paint(lamp.ch === " " ? "█" : lamp.ch, lamp.ch === " " ? { fg: lamp.bg, bg: lamp.bg } : lamp);
 		for (const line of wrap(lampText + gap() + paint(" ROOT ", root[0]) + gap() + paint(badge.map((c) => c.ch).join(""), badgeStyle), W)) lines.push(serialize(runPad(line, W)));
-		add(LABEL.ldr, GREY_PLATE, paint(launchText, { fg: "secondary" }));
 		add(LABEL.act, PLATE.ok, active);
-		if (gitDetails) for (const line of wrap(gitDetails, W)) lines.push(serialize(runPad(line, W)));
+		for (const value of [gitDetails, cwd]) if (value) for (const line of wrap(value, W)) lines.push(serialize(runPad(line, W)));
 		add(LABEL.ctx, PLATE[tone], chip(readoutText, READOUT_CHIP[tone]) + (tag ? gap() + tag : ""));
 		add(LABEL.mdl, { fg: "field", bg: "text", bold: true }, model);
 		if (ponytailPlate) for (const line of wrap(ponytailPlate, W)) lines.push(serialize(runPad(line, W)));
@@ -838,9 +839,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const sideStart = G + P + 1 + BW;
 
 	const block: Part[][] = [];
-	const actRows = fieldRows(plate("act", PLATE.ok, bootWipe(1)), active, BW);
+	const actRows = fieldRows(plate("act", PLATE.ok, bootWipe(0)), active, BW);
 	plateRows.set("act", block.length); block.push(...actRows);
-	if (gitDetails) block.push(...fieldRows(undefined, gitDetails, BW));
+	for (const value of [gitDetails, cwd]) if (value) block.push(...fieldRows(undefined, value, BW));
 	{
 		let n = Math.min(60, BW - 12), inline = n >= 12 && readoutText.length + 2 <= tickAt(70, n);
 		if (!inline) n = Math.min(60, BW);
@@ -889,7 +890,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 			}
 		}
 		const ctxValue = chip(readoutText, READOUT_CHIP[tone]) + (tag ? gap() + tag : "");
-		const ctxPlate = plate("ctx", PLATE[tone], Math.min(frame.wipe?.cells ?? P, bootWipe(2)), frame.wipe ? PLATE[frame.wipe.from] : undefined);
+		const ctxPlate = plate("ctx", PLATE[tone], Math.min(frame.wipe?.cells ?? P, bootWipe(1)), frame.wipe ? PLATE[frame.wipe.from] : undefined);
 		const after: Part[] = inline && tag ? [cell(" "), runOf(tag, BW - n - 1)] : [];
 		plateRows.set("ctx", block.length);
 		block.push([...ctxPlate, ...blanks(1, "field", true), ...gauge, ...after, ...blanks(BW - n - widthOf(after))]);
@@ -991,13 +992,11 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const actRow = ownRow ? header.length - 1 : 0;
 
 	const body: Part[][] = [];
-	plateRows.set("ldr", header.length);
-	body.push(...fieldRows(plate("ldr", GREY_PLATE, bootWipe(0)), pathPaint(launchText, { fg: "secondary" }, BOOT_AT.launch), FW));
-	const blockStart = header.length + body.length;
+	const blockStart = header.length;
 	for (const key of ["act", "ctx"] as const) if (plateRows.has(key)) plateRows.set(key, plateRows.get(key)! + blockStart);
 	block.forEach((row, i) => body.push([...row, ...sideCells(i - numeralRow0)]));
 	plateRows.set("mdl", header.length + body.length);
-	const modelPlate = plate("mdl", { fg: "field", bg: "text", bold: true }, bootWipe(4));
+	const modelPlate = plate("mdl", { fg: "field", bg: "text", bold: true }, bootWipe(3));
 	if (ponytailPlate && visibleWidth(model) + 18 <= FW) {
 		body.push(...fieldRows(modelPlate, model + paint(" ".repeat(FW - visibleWidth(model) - 18), { bg: band }) + ponytailPlate, FW, band));
 	} else {
@@ -1006,7 +1005,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	}
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
-		body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(5)) : undefined, status, FW));
+		body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status, FW));
 	});
 
 	const rows: Part[][] = [header[0]];
