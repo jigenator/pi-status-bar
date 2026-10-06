@@ -119,7 +119,7 @@ test("wide v9 snapshot: numbered 8-cell plates, inline readout, scale, numeral a
 	assert.deepEqual(plain(lines), [
 		"┏━ CMP×04  ■ jigenator/pi-status-bar                        ┼                             ROOT  █·█·█·······   03 AU  ━┓",
 		"┃                                                                                                                      ┃",
-		"   01 ACT  ⑂ main  modified                                                                   ▐ █ █ ▄█    █▀█ %         ",
+		"   01 ACT  ⑂ main modified                                                                    ▐ █ █ ▄█    █▀█ %         ",
 		"   02 CTX   114k/272k ███████████████                ┃           ┃                            ▐ ▀▀█  █    █▀█ USED      ",
 		"           0     10    20    30    40    50    60    70    80    90   100                     ▐   ▀ ▀▀▀ ▀ ▀▀▀ of 272k   ",
 		"┃  03 MDL  openai-codex/gpt-6-astra · thinking xhigh                                                                   ┃",
@@ -141,9 +141,9 @@ test("wide v9 snapshot: numbered 8-cell plates, inline readout, scale, numeral a
 	assert.doesNotMatch(plain(lines).join("\n"), /Projects|cwd|LDR/);
 	assert.equal(text(g[2].slice(11, 17)), "⑂ main");
 	assert.ok(g[2].slice(11, 17).every((c) => (c.ch === " " || c.fg === "secondary") && c.bg === "field" && !c.bold), "fork and branch are plain scale-grey text");
-	assert.ok(g[2].slice(17, 19).every((c) => c.ch === " " && c.bg === "field"), "two field cells before the status");
-	assert.ok(g[2].slice(19, 27).every((c) => c.fg === "warn" && c.bg === "field" && c.bold), "status is bold colored text, not a plate");
-	assert.equal(g[2][27].bg, "field", "no status plate padding");
+	assert.deepEqual([g[2][17].ch, g[2][17].bg, g[2][18].ch], [" ", "field", "m"], "exactly one field cell before the status");
+	assert.ok(g[2].slice(18, 26).every((c) => c.fg === "warn" && c.bg === "field" && c.bold), "status is bold colored text, not a plate");
+	assert.equal(g[2][26].bg, "field", "no status plate padding");
 	// Readout inline over the gauge: one real blank cell either side, on the fill or track itself.
 	const gauge = g[3].slice(11, 71);
 	assert.equal(text(gauge.slice(0, 11)), " 114k/272k ", "tokens in the window's unit, not a second percentage");
@@ -288,7 +288,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 	assert.deepEqual(rows(f, 100), [
 		"┏━ CMP×12  ■ owner/repo · PR #42                  ┼                   ROOT  █·█·█·······   03 AU  ━┓",
 		"┃          cwd /launch unrelated                                                                   ┃",
-		"   01 ACT  ⑂ feature/ui  modified                                         ▐ ▀▀█ █▀▀   █▀█ %         ",
+		"   01 ACT  ⑂ feature/ui modified                                          ▐ ▀▀█ █▀▀   █▀█ %         ",
 		"   02 CTX   32k/128k ███                     ┃         ┃                  ▐ █▀▀ ▀▀█   █ █ USED      ",
 		"           0                       50        70        90  100            ▐ ▀▀▀ ▀▀▀ ▀ ▀▀▀ of 128k   ",
 		"   03 MDL  provider/model · thinking high                                                           ",
@@ -299,7 +299,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 	assert.deepEqual(rows(f, 72), [
 		"┏━ CMP×12  ■ owner/repo             ┼      ROOT  █·█·█·······  03 AU  ━┓",
 		"┃          cwd /launch unrelated                                       ┃",
-		"   01 ACT  ⑂ feature/ui  modified                                       ",
+		"   01 ACT  ⑂ feature/ui modified                                        ",
 		"   02 CTX   32k/128k ██                    ┃         ┃                  ",
 		"           0                      50       70        90  100            ",
 		"   03 MDL  provider/model · thinking high                               ",
@@ -311,7 +311,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 		"┏ CMP×12  ■ owner/repo · PR #42                ┓",
 		"┃                   ROOT  █·█·█·······  03 AU  ┃",
 		"          cwd /launch unrelated                 ",
-		"  01 ACT  ⑂ feature/ui  modified                ",
+		"  01 ACT  ⑂ feature/ui modified                 ",
 		"  02 CTX   32k/128k        ┃    ┃               ",
 		"          0           50   70     100           ",
 		"  03 MDL  provider/model · thinking high        ",
@@ -323,8 +323,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 		" CMP×12  ■ owner/repo · PR #42",
 		"█  ROOT   03 AU               ",
 		"cwd /launch unrelated         ",
-		" 01 ACT  ⑂ feature/ui         ",
-		"modified                      ",
+		" 01 ACT  ⑂ feature/ui modified",
 		" 02 CTX   32k/128k            ",
 		" 03 MDL  provider/model ·     ",
 		"thinking high                 ",
@@ -355,14 +354,14 @@ test("branch replaces the Active path; cwd shows only when it differs; paths kee
 	assert.match(out[0], /CMP×12  ■ owner\/repo /);
 	// Pi's cwd takes the spacer row above ACT, so the numbered plates stay together.
 	assert.match(out[1], /^┃ {10}cwd Projects\/pi-status-bar {2}/);
-	assert.match(out[2], /01 ACT {2}⑂ feature\/ui {2}modified {2}/);
+	assert.match(out[2], /01 ACT {2}⑂ feature\/ui modified {2}/);
 	assert.match(out[3], /02 CTX/);
 	assert.doesNotMatch(out.join("\n"), /worktrees\/feature|LDR|MN|Projects\/repo|release/);
 	// Without a repository name the path stays, followed by its Git details; cwd stays above.
 	f.workspace!.github = { kind: "none", reason: "No GitHub remote" };
 	out = rows(f, 160);
 	assert.match(out[2], /01 ACT {2}worktrees\/feature {2}/); assert.doesNotMatch(out[2], /feature\/ui/);
-	assert.match(out[3], /^ {11}⑂ feature\/ui {2}modified/);
+	assert.match(out[3], /^ {11}⑂ feature\/ui modified/);
 	assert.match(out[1], /^┃ {10}cwd Projects\/pi-status-bar/); assert.match(out[4], /02 CTX/);
 	f.workspace!.github = before.workspace!.github;
 	assert.deepEqual(f, before, "display shortening must not change stored paths or URLs");
@@ -406,7 +405,7 @@ test("truthful none, pending, unknown, unborn/detached, missing main and PR stat
 	out = rows(f, 120);
 	assert.doesNotMatch(out.join("\n"), /GitHub|PR/); assert.match(out[0], /^┏━ CMP×12 {20,}┼/);
 	assert.match(out[2], /01 ACT {2}\/repo\/worktree {2}/, "no repository name: the path stays");
-	assert.match(out[3], /⑂ feature\/ui {2}modified/);
+	assert.match(out[3], /⑂ feature\/ui modified/);
 	f.workspace = undefined;
 	out = rows(f, 120);
 	assert.match(out[0], /CMP×12  ■ GitHub pending /); assert.match(out[2], /01 ACT {2}\/repo\/worktree {2}/); assert.match(out[3], /Git pending/);
@@ -429,7 +428,7 @@ test("truthful none, pending, unknown, unborn/detached, missing main and PR stat
 		assert.ok(out[0].includes(expected), out[0]); assert.doesNotMatch(out.join("\n"), /No open PR|PR not applicable|PR #/);
 		// Detached: no branch identifies the checkout, so the path stays above the details.
 		assert.match(out[2], /01 ACT {2}\/repo\/worktree {2}/);
-		assert.match(out[3], /⑂ detached {2}status unavailable \(timeout\)/); assert.doesNotMatch(out.join("\n"), /MN|pruned/);
+		assert.match(out[3], /⑂ detached status unavailable \(timeout\)/); assert.doesNotMatch(out.join("\n"), /MN|pruned/);
 	}
 	repository(f).active.revision = "abc123";
 	assert.match(rows(f, 120).join("\n"), /detached @abc123/);
@@ -437,7 +436,7 @@ test("truthful none, pending, unknown, unborn/detached, missing main and PR stat
 	repository(f).active.branch = "main"; repository(f).active.revision = null;
 	repository(f).main = repository(f).active; delete repository(f).mainUnavailableReason;
 	out = rows(f, 120);
-	assert.match(out[2], /01 ACT {2}⑂ main {2}status unavailable \(timeout\)/); assert.doesNotMatch(out.join("\n"), /2\.1 MN|\/repo\/worktree/);
+	assert.match(out[2], /01 ACT {2}⑂ main status unavailable \(timeout\)/); assert.doesNotMatch(out.join("\n"), /2\.1 MN|\/repo\/worktree/);
 });
 
 test("directory-first Git details follow every path wrap; a branch-only ACT wraps alone; continuations stay unnumbered", () => {
@@ -755,15 +754,15 @@ test("boot: varied treatments on real values, header draw-in, then a settled fra
 	assert.equal(first[3].slice(37, 71).filter((c) => c.fg === "primary" || c.bg === "primary").length, 0, "no fake count-up");
 	assert.match(text(first[2]).slice(90), /█/, "boot shows only the current numeral shape");
 	assert.ok(first.slice(2, 5).flatMap((row) => row.slice(94, 107)).filter((c) => "█▀▄".includes(c.ch)).every((c) => c.fg === "graphic"), "current squares acquire color from grey");
-	assert.equal(text(first[2].slice(11, 27)), "⑂ main  modified", "exact branch and status from the first frame");
+	assert.equal(text(first[2].slice(11, 26)), "⑂ main modified", "exact branch and status from the first frame");
 	assert.ok(first[2].slice(11, 17).filter((c) => c.ch !== " ").every((c) => c.bg === "surface"), "branch pieces wait on a grey band");
-	assert.ok(first[2].slice(19, 27).every((c) => c.bg === "surface" && c.fg === "secondary"), "status text waits on a grey band");
+	assert.ok(first[2].slice(18, 26).every((c) => c.bg === "surface" && c.fg === "secondary"), "status text waits on a grey band");
 	const lock = grid(at(6 * MOTION_TICK_MS));
 	assert.ok(lock[2].slice(13, 17).every((c) => c.bg === "primary"), "the branch latches acid as it locks");
 	const mid = grid(at(8 * MOTION_TICK_MS));
 	assert.ok(mid[2].slice(13, 17).every((c) => c.bg === "field" && c.fg === "secondary"), "then settles to scale grey");
 	assert.ok(mid[5].slice(11).some((c) => c.bg === "surface" && c.fg === "secondary"), "model words wait their turn");
-	const settledStatus = grid(at(12 * MOTION_TICK_MS))[2].slice(19, 27);
+	const settledStatus = grid(at(12 * MOTION_TICK_MS))[2].slice(18, 26);
 	assert.ok(settledStatus.every((c) => c.bg === "field" && c.fg === "warn" && c.bold), "status settles to its bold ink");
 	// Values change during boot and are shown at once.
 	const changed = session(93.3), s2 = advanceMotion(state, changed, 300);

@@ -722,7 +722,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		// Colored text, not a plate: a plate would merge with the acid gauge fill directly below.
 		const [label, ink]: [string, Hue] = info.dirty === null ? ["status unavailable", "text"] : info.dirty ? ["modified", "warn"] : ["clean", "primary"];
 		const status = paint(label, settleStyle({ fg: ink, bold: true }, gitAt));
-		return paint("⑂", settleStyle({ fg: "secondary" }, branchAt)) + gap() + pathPaint(safeText(branch), { fg: "secondary" }, branchAt) + gap() + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
+		return paint("⑂", settleStyle({ fg: "secondary" }, branchAt)) + gap() + pathPaint(safeText(branch), { fg: "secondary" }, branchAt) + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
 	};
 	const git = snapshot.workspace?.git, github = snapshot.workspace?.github;
 	// A branch identifies its checkout within a repository: Git keeps one branch out of two worktrees and Active

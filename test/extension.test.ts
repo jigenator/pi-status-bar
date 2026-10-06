@@ -242,10 +242,10 @@ test("CMP counts persisted active-branch compactions; restores and recounts with
 test("live context/model/statuses; local tool refresh, stale completions and owner disposal", async (t) => {
 	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch);
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
-	await h.select(f.repo); await until(() => /release {2}clean/.test(h.text()));
+	await h.select(f.repo); await until(() => /release clean/.test(h.text()));
 	await writeFile(join(f.repo, "untracked"), "changed");
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "external-write", toolName: "write", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release {2}modified/.test(h.text()));
+	await until(() => /release modified/.test(h.text()));
 	h.statuses.set("second", "Second extension status"); h.changeModel();
 	assert.match(h.text(), /Ponytail ready/); assert.match(h.text(), /Second extension status/);
 	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/);
@@ -272,9 +272,9 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release {2}clean/.test(h.text()) && /CMP×00  ■ fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
+	await until(() => /release clean/.test(h.text()) && /CMP×00  ■ fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
 	// Named repository and known branch: the branch replaces the path on the ACT row.
-	assert.match(row(h.text(), "01 ACT"), /01 ACT {2}⑂ release {2}clean/); assert.doesNotMatch(h.text(), new RegExp(shown(f.repo)));
+	assert.match(row(h.text(), "01 ACT"), /01 ACT {2}⑂ release clean/); assert.doesNotMatch(h.text(), new RegExp(shown(f.repo)));
 	assert.ok(row(h.text(), "cwd ").includes(shown(f.launch)));
 	assert.equal(await f.count(f.ghLog), 1);
 	assert.deepEqual(h.errors, []);
@@ -662,7 +662,7 @@ test("PNYTL observer and directory-first linked-worktree selection preserve both
 	f.runGit(f.repo, ["worktree", "add", "-b", "feat/footer-ponytail", checkout]);
 	const manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager, "tui", { emptyStatuses: true });
 	t.after(() => h.stop()); await h.emitStart(); await h.motion("off");
-	await h.select(checkout); await until(() => /feat\/footer-ponytail {2}clean/.test(h.text()));
+	await h.select(checkout); await until(() => /feat\/footer-ponytail clean/.test(h.text()));
 	h.setStatus("other", "Other extension retained");
 	for (const [raw, expected] of [[ponytailText("full"), "FUL"], [undefined, "OFF"], ["warning: Ponytail unavailable", "UNK"]] as const) {
 		h.setStatus("ponytail", raw);
@@ -670,7 +670,7 @@ test("PNYTL observer and directory-first linked-worktree selection preserve both
 		const lines = h.text().split("\n"), act = lines.findIndex((line) => line.includes("01 ACT"));
 		assert.ok(lines[act].includes(shown(checkout)));
 		assert.doesNotMatch(lines[act], /feat\/footer-ponytail|clean|⑂/);
-		assert.match(lines[act + 1], /⑂ feat\/footer-ponytail {2}clean/);
+		assert.match(lines[act + 1], /⑂ feat\/footer-ponytail clean/);
 		assert.doesNotMatch(lines[act + 1], /01 ACT/); assert.ok(lines[act - 1].includes(`cwd ${shown(f.launch)}`));
 		assert.doesNotMatch(h.text(), /2\.1 MN|release|https:\/\/github\.com/);
 		assert.match(h.text(), /Other extension retained/);
