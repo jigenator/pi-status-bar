@@ -60,7 +60,7 @@ async function fixtures(t: any) {
 	return { root, launch, plain, repo, second, runGit, gitLog, ghLog, count };
 }
 
-async function harness(f: any, manager: any, mode = "tui") {
+async function harness(f: any, manager: any, mode = "tui", extra: { before?: string[]; after?: string[]; emptyStatuses?: boolean } = {}) {
 	// Real public bus, with transparent subscription accounting for disposal assertions.
 	const nativeBus = host.createEventBus(), subscriptions = new Map<string, number>();
 	const events = { emit: nativeBus.emit, on(channel: string, handler: (data: any) => void) {
@@ -71,13 +71,13 @@ async function harness(f: any, manager: any, mode = "tui") {
 	const requests: any[] = [];
 	let rpc: ((request: any) => void | Promise<void>) | undefined;
 	events.on("subagents:rpc:v1:request", (request) => { requests.push(request); return rpc?.(request); });
-	const loader = new host.DefaultResourceLoader({ eventBus: events, cwd: f.launch, agentDir: join(f.root, "agent"), settingsManager: host.SettingsManager.inMemory(), additionalExtensionPaths: [packageRoot], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+	const loader = new host.DefaultResourceLoader({ eventBus: events, cwd: f.launch, agentDir: join(f.root, "agent"), settingsManager: host.SettingsManager.inMemory(), additionalExtensionPaths: [...(extra.before ?? []), packageRoot, ...(extra.after ?? [])], noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
 	await loader.reload();
 	const loaded = loader.getExtensions();
 	assert.deepEqual(loaded.errors, [], "real Pi loader must resolve the package entry and integrated workspace import");
 	assert.deepEqual(loaded.warnings, [], "package manifest must use host peers without loader warnings");
-	assert.equal(loaded.extensions.length, 1);
-	assert.equal(loaded.extensions[0].path, source);
+	assert.equal(loaded.extensions.length, 1 + (extra.before?.length ?? 0) + (extra.after?.length ?? 0));
+	assert.equal(loaded.extensions[extra.before?.length ?? 0].path, source);
 	const runner = new host.ExtensionRunner(loaded.extensions, loaded.runtime, f.launch, manager, undefined);
 	const tool = runner.getToolDefinition("set_active_project"); assert.ok(tool);
 	let component: any, footerFactory: any;
@@ -86,7 +86,8 @@ async function harness(f: any, manager: any, mode = "tui") {
 	let thinking = "high";
 	let usage: any = { tokens: 1000, contextWindow: 128_000, percent: 0.8 };
 	const notices: [string, string][] = [];
-	const statuses = new Map([["ponytail", "\x1b[32mPonytail ready\x1b[0m"]]);
+	const statuses = new Map(extra.emptyStatuses ? [] : [["ponytail", "\x1b[32mPonytail ready\x1b[0m"]]);
+	const statusCalls: any[] = [];
 	let renders = 0;
 	const errors: any[] = []; runner.onError((error: any) => errors.push(error));
 	runner.bindCore({
@@ -94,10 +95,17 @@ async function harness(f: any, manager: any, mode = "tui") {
 		getActiveTools: () => [tool.name], getAllTools: () => [tool], getSettings: () => ({}), setActiveTools() {}, refreshTools() {}, getCommands: () => [], setModel: async () => true,
 		getThinkingLevel: () => thinking, setThinkingLevel: (value: string) => { thinking = value; },
 	}, { getModel: () => model, getScopedModels: () => [], isIdle: () => idle, isProjectTrusted: () => false, getSignal: () => undefined, abort() {}, hasPendingMessages: () => false, shutdown() {}, getContextUsage: () => usage, compact() {}, getSystemPrompt: () => "" });
-	runner.setUIContext({ setFooter(factory: any) {
+	const makeUI = () => ({ theme: { ...theme, fg: (_color: string, text: string) => text },
+		setStatus(key: string, text: string | undefined) {
+			statusCalls.push({ key, text, receiver: this });
+			if (key === "throw-fixture") throw new Error("status failure");
+			if (text === undefined) statuses.delete(key); else statuses.set(key, text);
+			return "forwarded";
+		}, setFooter(factory: any) {
 		component?.dispose(); component = undefined; footerFactory = factory;
 		if (factory) component = factory({ requestRender: () => { renders++; } }, theme, { getExtensionStatuses: () => statuses });
-	}, notify(message: string, level: string) { notices.push([level, message]); } }, mode);
+	}, notify(message: string, level: string) { notices.push([level, message]); } });
+	runner.setUIContext(makeUI(), mode);
 	const emitStart = async (reason = "startup") => runner.emit({ type: "session_start", reason });
 	const stop = async (reason = "quit") => runner.emit({ type: "session_shutdown", reason });
 	const text = () => component?.render(300).map((line: string) => stripTerminalSequences(line)).join("\n") ?? "";
@@ -108,7 +116,11 @@ async function harness(f: any, manager: any, mode = "tui") {
 		if (persist) manager.appendMessage({ role: "toolResult", toolCallId: id, toolName: tool.name, content: result.content, details: result.details, isError: false, timestamp: Date.now() });
 		return result;
 	};
-	return { events, requests, subscriptions, setRpc(handler?: (request: any) => void | Promise<void>) { rpc = handler; },
+	return { events, requests, subscriptions, statusCalls,
+		get ui() { return runner.createContext().ui; },
+		setStatus(key: string, text?: string) { return runner.createContext().ui.setStatus(key, text); },
+		replaceUI() { runner.setUIContext(makeUI(), mode); },
+		setRpc(handler?: (request: any) => void | Promise<void>) { rpc = handler; },
 		setIdle(value: boolean) { idle = value; },
 		reply(request: any, data: any, envelope = {}) { events.emit(`subagents:rpc:v1:reply:${request.requestId}`, { version: 1, requestId: request.requestId, method: request.method, success: true, data, ...envelope }); },
 		replaceFooter() { const previous = component; previous?.dispose(); component = footerFactory({ requestRender: () => { renders++; } }, theme, { getExtensionStatuses: () => statuses }); return previous; },
@@ -506,5 +518,134 @@ test("fleet/decoration ownership: ready replacement, tree/new session, footer re
 	h.reply(old, fleetData(96)); await advance(10_000);
 	assert.equal(replyListeners(h), 0); assert.equal(h.requests.length, stoppedRequests);
 	assert.equal(h.subscriptions.get("subagents:rpc:v1:ready"), 0);
+	assert.deepEqual(h.errors, []);
+});
+
+const ponytailCode = (h: any) => /PNYTL \/\/ (\w{3})/.exec(h.text())?.[1];
+const ponytailText = (mode: string, working = false) => `${working ? "●" : "○"} 🐴 ponytail: ${{ lite: "🌿 LITE", full: "⚡ FULL", ultra: "🔥 ULTRA", review: " REVIEW" }[mode]}`;
+// Synthetic portable producer: actual optional producer compatibility is checked
+// separately against installed Ponytail, never silently required by npm test.
+async function statusProducer(f: any, initial: string) {
+	const path = join(f.root, `producer-${initial}.ts`);
+	await writeFile(path, `export default function(pi) { const emit = (_e,ctx) => {${initial === "hidden" ? "" : `ctx.ui.setStatus('ponytail', ${initial === "off" ? "undefined" : JSON.stringify(ponytailText(initial))});`}}; pi.on('session_start',emit); pi.on('session_tree',emit); }`);
+	return path;
+}
+
+test("PNYTL status startup: observer-first captures OFF; producer-first recovers labels but missing never guesses OFF", async (t) => {
+	const f = await fixtures(t);
+	for (const first of [true, false]) for (const mode of ["off", "lite", "full", "ultra", "review", "hidden"]) {
+		const producer = await statusProducer(f, mode), manager = host.SessionManager.inMemory(f.launch);
+		const h = await harness(f, manager, "tui", { [first ? "after" : "before"]: [producer], emptyStatuses: true });
+		t.after(() => h.stop()); await h.emitStart();
+		const expected = mode === "hidden" || (mode === "off" && !first) ? "UNK" : { off: "OFF", lite: "LTE", full: "FUL", ultra: "ULT", review: "REV" }[mode];
+		if (expected === "UNK") { assert.equal(ponytailCode(h), "CHK"); await sleep(5); }
+		assert.equal(ponytailCode(h), expected, `${first}/${mode}`);
+		if (expected !== "UNK") {
+			assert.doesNotMatch(h.text(), /🐴 ponytail:/, "recognized status is represented once");
+			if (mode !== "off") assert.equal(h.statuses.get("ponytail"), ponytailText(mode), "host map is NOT suppressed");
+		}
+		h.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "OFF", "later explicit clear works in either order");
+		await h.stop(); assert.deepEqual(h.errors, []);
+	}
+});
+
+test("PNYTL parses only bounded exact styled format; preserves malformed/warning raw status and every other key", async (t) => {
+	const f = await fixtures(t), h = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { emptyStatuses: true });
+	t.after(() => h.stop()); await h.emitStart(); await h.motion("off");
+	const other = "\x1b[38;2;4;5;6mother FULL status\x1b[0m";
+	h.setStatus("ponytail-warning", other); h.setStatus("other", "Other status");
+	for (const [mode, code] of [["lite", "LTE"], ["full", "FUL"], ["ultra", "ULT"], ["review", "REV"]]) {
+		h.setStatus("ponytail", `\x1b[38:2::1:2:3m${ponytailText(mode)}\x1b[0m`);
+		assert.equal(ponytailCode(h), code); assert.doesNotMatch(h.text(), /🐴 ponytail:/);
+		assert.match(h.text(), /other FULL status/); assert.match(h.text(), /Other status/);
+		assert.equal(h.statuses.get("ponytail-warning"), other);
+		assert.match(h.component.render(300).join(""), /\x1b\[38;2;4;5;6mother FULL status/);
+	}
+	for (const raw of ["FULL", "Warning FULL unavailable", "○ 🐴 ponytail: ⚡ FULL extra", "○ 🐴 ponytail: 🌿 FULL", "○ 🐴 ponytail: FULL", "○ 🐴 ponytail:  review", "○ 🐴 ponytail: ⚡ FULL\n", "\x1b[2J" + ponytailText("full"), ponytailText("full") + "\x1b]0;attack\x07", "\u202e" + ponytailText("full"), "x".repeat(600)]) {
+		h.setStatus("ponytail", raw);
+		assert.equal(ponytailCode(h), "UNK", JSON.stringify(raw));
+		assert.equal(h.statuses.get("ponytail"), raw, "host data untouched");
+		assert.match(h.text(), /05 EXT/);
+		assert.doesNotMatch(h.component.render(300).join(""), /\x1b\[2J|\x1b\]|\u202e/);
+	}
+	h.setStatus("ponytail", "warning: FULL unavailable"); assert.match(h.text(), /warning: FULL unavailable/);
+	h.setStatus("ponytail", ponytailText("lite")); h.statuses.delete("ponytail");
+	assert.equal(ponytailCode(h), "UNK", "map absence without observed clear is not OFF");
+	for (let n = 0; n < 30; n++) h.text();
+	assert.deepEqual(h.errors, []);
+});
+
+test("PNYTL observer preserves original receiver/return/errors, does not stack and never overwrites later foreign wrappers", async (t) => {
+	const f = await fixtures(t), h = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { emptyStatuses: true });
+	t.after(() => h.stop()); const original = h.ui.setStatus;
+	await h.emitStart(); const wrapped = h.ui.setStatus;
+	assert.notEqual(wrapped, original);
+	assert.equal(h.setStatus("other", "data"), "forwarded"); assert.equal(h.statusCalls.at(-1).receiver, h.ui);
+	assert.throws(() => h.setStatus("throw-fixture", "failure"), /status failure/);
+	h.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "OFF");
+	for (let n = 0; n < 10; n++) { const old = h.replaceFooter(); old.dispose(); assert.equal(h.ui.setStatus, wrapped); assert.equal(ponytailCode(h), "OFF"); }
+	let calls = 0;
+	const foreign = function (this: any, ...args: any[]) { calls++; return wrapped.apply(this, args); };
+	h.ui.setStatus = foreign;
+	for (let n = 0; n < 10; n++) h.replaceFooter();
+	assert.equal(h.ui.setStatus, foreign); const before = h.statusCalls.length;
+	h.setStatus("ponytail", ponytailText("ultra")); assert.equal(calls, 1); assert.equal(h.statusCalls.length, before + 1); assert.equal(ponytailCode(h), "ULT");
+	h.component.dispose(); assert.equal(h.ui.setStatus, foreign);
+	const renders = h.renders;
+	h.setStatus("ponytail", undefined); assert.equal(h.renders, renders, "inert under foreign chain after disposal");
+	assert.equal(h.statuses.has("ponytail"), false, "fallback footer still gets the original behavior");
+	await h.stop(); assert.equal(h.ui.setStatus, foreign); assert.deepEqual(h.errors, []);
+});
+
+test("PNYTL lifecycle: no OFF evidence crosses session/UI; tree/new/reload/resume/fork rebind and shutdown/non-TUI detach", async (t) => {
+	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager, "tui", { emptyStatuses: true });
+	t.after(() => h.stop()); const original = h.ui.setStatus;
+	await h.emitStart(); h.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "OFF");
+	for (const reason of ["tree", "new", "reload", "resume", "fork"]) {
+		const oldComponent = h.component;
+		if (reason === "tree") await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
+		else { if (reason === "new" || reason === "fork") manager.newSession(); await h.emitStart(reason); }
+		assert.deepEqual(oldComponent.render(120), []); oldComponent.dispose();
+		assert.equal(ponytailCode(h), "CHK"); await sleep(5); assert.equal(ponytailCode(h), "UNK", reason);
+		h.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "OFF");
+	}
+	const oldUI = h.ui; h.replaceUI(); assert.notEqual(h.ui, oldUI);
+	await h.emitStart("reload"); assert.equal(oldUI.setStatus, original);
+	oldUI.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "CHK", "old UI cannot create new OFF evidence");
+	h.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "OFF");
+	// A render can rebind a replaced UI even before its next lifecycle event.
+	h.replaceUI(); h.text(); await sleep(5); assert.notEqual(ponytailCode(h), "OFF");
+	h.setStatus("ponytail", ponytailText("review")); assert.equal(ponytailCode(h), "REV");
+	const nextOriginal = h.ui.setStatus; await h.stop(); assert.notEqual(h.ui.setStatus, nextOriginal);
+	const renders = h.renders; h.setStatus("ponytail", undefined); assert.equal(h.renders, renders);
+	const nonTui = await harness(f, host.SessionManager.inMemory(f.launch), "print"); t.after(() => nonTui.stop());
+	const untouched = nonTui.ui.setStatus; await nonTui.emitStart(); assert.equal(nonTui.ui.setStatus, untouched);
+	assert.equal(nonTui.component, undefined); assert.deepEqual(h.errors, []);
+});
+
+test("PNYTL live status/motion: immediate idle changes, no activity-only flashes, off-time replay or extra bus I/O", async (t) => {
+	const f = await fixtures(t), h = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { emptyStatuses: true });
+	t.after(() => h.stop()); await h.emitStart(); h.setStatus("ponytail", ponytailText("lite")); h.text();
+	const advance = await activityClock(t, h);
+	const modeInk = () => {
+		const line = h.component.render(120).find((line: string) => stripTerminalSequences(line).includes("PNYTL"));
+		const start = stripTerminalSequences(line).indexOf("PNYTL") + 9;
+		let col = 0, fg = "", inks: string[] = [];
+		for (const token of line.match(/\x1b\[[0-9;]*m|[^\x1b]/gu) ?? []) {
+			if (token.startsWith("\x1b")) { const color = /^\x1b\[38;2;(\d+;\d+;\d+)m$/.exec(token); if (color) fg = color[1]; }
+			else { if (col >= start && col < start + 3) inks.push(fg); col++; }
+		}
+		return inks.join("|");
+	};
+	const black = /(?:^|\|)0;0;0(?:\||$)/;
+	h.setStatus("ponytail", ponytailText("full")); assert.equal(ponytailCode(h), "FUL"); assert.doesNotMatch(modeInk(), black);
+	await h.motion("on"); await advance(100); assert.doesNotMatch(modeInk(), black);
+	h.setStatus("ponytail", ponytailText("full", true)); await advance(100); assert.doesNotMatch(modeInk(), black, "activity glyph is not a mode change");
+	h.setStatus("ponytail", ponytailText("ultra")); h.text(); await advance(100); assert.match(modeInk(), black);
+	await h.motion("off"); assert.doesNotMatch(modeInk(), black);
+	await h.motion("on"); h.setStatus("ponytail", ponytailText("review")); h.text(); await advance(100); assert.doesNotMatch(modeInk(), black);
+	h.replaceFooter(); h.setStatus("ponytail", ponytailText("lite")); h.text(); await advance(100); assert.doesNotMatch(modeInk(), black);
+	h.setStatus("ponytail", undefined); assert.equal(ponytailCode(h), "OFF"); assert.doesNotMatch(modeInk(), black);
+	const count = h.requests.length; for (let n = 0; n < 30; n++) h.text(); assert.equal(h.requests.length, count);
 	assert.deepEqual(h.errors, []);
 });

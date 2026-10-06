@@ -9,7 +9,7 @@ It shows, in a framed Marathon-inspired “Acid / Black” instrument panel with
 - active Git branch and clean/modified state;
 - the repository's primary checkout (`2.1 MN`) when Active is a linked worktree;
 - a graduated context gauge with 70%/90% thresholds and, at 100+ columns, a large percentage numeral;
-- the model and thinking level, plus statuses from other extensions;
+- the model and thinking level, a white **⌑ PNYTL //** mode plate, plus statuses from other extensions (recognized Ponytail text is represented once by its plate);
 - a **ROOT** working lamp and an independent **AU (Active Units)** badge from the optional public pi-subagents fleet API.
 
 Token totals, cache metrics, and cost are intentionally omitted. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
@@ -35,6 +35,22 @@ Active is an agent declaration, not automatic cwd tracking, so the footer can be
 AU is native active work, **not an exact running-agent count**: pi-subagents includes queued/pending work and counts an active workflow container as one. Known counts show at least two digits (`00 AU`, `03 AU`, `123 AU`); up to six rail marks accompany the exact uncapped total. Without a compatible owner, or on malformed/error/timeout replies, the badge shows `? AU`, never a fabricated zero. The integration was verified against Pi 1.0.2 and pi-subagents 0.76.0; it uses public in-process events, not an imported dependency or status-text parsing. Samples refresh independently of decoration, normally five seconds after the prior collection finishes, with coalesced turn/tool/ready updates. Motion off does not stop collection. ROOT comes from Pi's `isIdle()` independently of AU, including the post-`agent_end` retry/continuation period.
 
 CMP counts successful compactions persisted on the currently selected session branch, including ones inherited from earlier on that branch; abandoned sibling branches, branch summaries and failed or cancelled compaction attempts are not counted. It is not a context-usage reading. Unknown is `CMP×??`, never a fabricated zero, and counts above 99 deliberately show `CMP×99+` to keep the plate eight cells wide.
+
+## Ponytail activation and compatibility
+
+PNYTL uses **Ponytail 4.13.0's existing status text** on key `ponytail`, tested with Pi 1.0.4. It shows `LTE`, `FUL`, `ULT`, legacy restored `REV`, or `OFF` after observing an explicit clear. `CHK` is the short initialization turn; missing, hidden or incompatible output becomes `UNK`, never an inferred OFF/default.
+
+For reliable startup/restoration, when separately enabling this integration:
+
+1. Enable Ponytail's status emission: set `"hideStatus": false` in its configuration (`~/.config/ponytail/config.json`, or the configured XDG/platform location). `PONYTAIL_HIDE_STATUS=0` overrides a hidden setting. This package does **not** edit that configuration.
+2. Load **pi-status-bar before Ponytail**. With both in Pi's `packages` array, place pi-status-bar's entry earlier; other CLI/project extension sources can affect effective order. Start/reload Pi only when ready to activate the change.
+3. Check idle `/ponytail lite`, `/ponytail ultra`, and `/ponytail off`: the dedicated plate updates, without a duplicate raw Ponytail status. `/ponytail default ...` changes the default, **not the current mode**. REVIEW is a legacy restored state, not an accepted review mode command.
+
+**Order matters for initial OFF.** Ponytail expresses OFF by deleting its status key. If Ponytail runs first, the footer can recover known labels from Pi's current map but cannot recover an earlier clear; it truthfully shows UNK until a later explicit emission, such as `/ponytail off`. It never treats an absent key as OFF. Runtime UI replacement must rebind the footer before a clear (normal session startup/reload does this with the order above).
+
+Recognized Ponytail status is represented by the plate instead of duplicated in EXT. Host status data is untouched, every **other key** remains intact, and unrecognized Ponytail warnings/text remain sanitized in EXT alongside UNK. There is no Ponytail RPC, runtime import, polling, prompt/session/default inference or producer patch. A narrow reversible observer of public `ctx.ui.setStatus` distinguishes clear from absence; this relies on tested Pi 1.0.4 shared-UI behavior, not a documented subscription API. See [architecture](docs/architecture.md#ponytail-status-integration).
+
+The white plate and black icon/title/slashes stay static. Only the three current mode letters can flash two seeded random subsets black, then recover; no sweep or scrambling. First discovery, OFF/CHK/UNK and motion off settle immediately. Activity-dot changes do not restart mode flashes; resuming motion does not replay off-time changes.
 
 No live interactive-terminal/motion or live fleet-owner smoke test is claimed; automated tests use the installed Pi loader and public bus with offline replies.
 
