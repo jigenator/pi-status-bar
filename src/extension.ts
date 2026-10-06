@@ -19,6 +19,9 @@ const RPC_READY = "subagents:rpc:v1:ready";
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const motionSeed = () => randomBytes(4).readInt32LE();
+// Persisted successful compactions on the selected branch only: failed/cancelled
+// attempts append nothing, and branch_summary entries and abandoned siblings are excluded.
+const countCompactions = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
 type Selection = { version: 1; path: string };
 // Decoration only: owned by one installed TUI footer and never triggers inspection.
 type Animation = { state: MotionState; timer?: ReturnType<typeof setTimeout>; due?: number; schedule(now: number): void; resume(): void };
@@ -28,6 +31,7 @@ type SessionState = {
 	id: string;
 	disposed: boolean;
 	units: number | null;
+	compactions: number;
 	activity?: ActivityCollector;
 	launch: string;
 	active: string;
@@ -215,7 +219,7 @@ export default function (pi: ExtensionAPI) {
 			const data = entry.message.details as Partial<Selection> | undefined;
 			if (data?.version === 1 && typeof data.path === "string" && isAbsolute(data.path)) active = data.path;
 		}
-		const s: SessionState = { ctx, id, disposed: false, units: null, launch, active, selection: 0, pr: { kind: "unavailable", reason: "lookup pending" }, prCache, refreshPending: false, motion };
+		const s: SessionState = { ctx, id, disposed: false, units: null, compactions: countCompactions(ctx), launch, active, selection: 0, pr: { kind: "unavailable", reason: "lookup pending" }, prCache, refreshPending: false, motion };
 		session = s;
 		if (ctx.mode === "tui") {
 			ctx.ui.setFooter((tui, theme, footerData) => {
@@ -226,7 +230,7 @@ export default function (pi: ExtensionAPI) {
 				const snapshot = (): FooterSnapshot => ({
 					homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr,
 					contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(),
-					statuses: footerData.getExtensionStatuses(), activity: { working: !s.ctx.isIdle(), units: s.units },
+					statuses: footerData.getExtensionStatuses(), activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions,
 				});
 				s.units = null;
 				let latest = snapshot();
@@ -290,14 +294,28 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
 	});
 	pi.on("tool_execution_end", () => { if (session) { void refreshLocal(session); session.activity?.refresh(); } });
+	// Recount, never increment, so duplicate events cannot double-count. session_compact
+	// follows persistence; extension turn_end/agent_before_settle compaction drafts emit
+	// no session_compact but are committed before the next turn_start or agent_end/settled.
+	const recount = (ctx: ExtensionContext) => {
+		const s = session;
+		if (!s || !current(s) || ctx.sessionManager.getSessionId() !== s.id) return undefined;
+		s.ctx = ctx;
+		const compactions = countCompactions(ctx), changed = s.compactions !== compactions;
+		s.compactions = compactions;
+		return { s, changed };
+	};
+	for (const event of ["session_compact", "turn_start"] as const) {
+		pi.on(event, (_event, ctx) => { const result = recount(ctx); if (result?.changed) result.s.requestRender?.(); });
+	}
 	// agent_end precedes retries/continuations; only isIdle(), not the event name,
 	// determines ROOT. Pi clears run-active before delivering agent_settled.
 	for (const event of ["agent_start", "agent_end", "agent_settled"] as const) {
 		pi.on(event, (_event, ctx) => {
-			if (!session || !current(session) || ctx.sessionManager.getSessionId() !== session.id) return;
-			session.ctx = ctx;
-			session.requestRender?.();
-			session.activity?.refresh();
+			const s = recount(ctx)?.s;
+			if (!s) return;
+			s.requestRender?.();
+			s.activity?.refresh();
 		});
 	}
 

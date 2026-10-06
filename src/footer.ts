@@ -16,6 +16,8 @@ export type FooterSnapshot = {
 	thinking: string;
 	statuses: ReadonlyMap<string, string>;
 	activity?: FooterActivity;
+	/** Successful persisted compactions on the selected branch. Absent, null or invalid is unknown, never zero. */
+	compactions?: number | null;
 };
 /** Pi's theme converts these concrete colors for truecolor or 256-color terminals. */
 export type FooterTheme = Pick<Theme, "style" | "getColorMode">;
@@ -66,6 +68,8 @@ const C = {
 	warn: rgbColor(0xd7, 0x9e, 0x52),
 	high: rgbColor(0xf2, 0x47, 0x23),
 	graphic: rgbColor(0x71, 0x71, 0x71),
+	violet: rgbColor(0x52, 0x00, 0xff), // CMP 1–2
+	pink: rgbColor(0xff, 0x15, 0xbd), // CMP 3–4
 	wz: rgbColor(0x2b, 0x20, 0x10), // 20% warning over the field
 	hz: rgbColor(0x30, 0x0e, 0x07), // 20% high over the field
 };
@@ -98,8 +102,15 @@ const LABEL = { ldr: "01 LDR", act: "02 ACT", main: "2.1 MN", ctx: "03 CTX", mdl
 const finitePercent = (percent: unknown) => typeof percent === "number" && Number.isFinite(percent) ? percent : undefined;
 const toneOf = (percent: number | undefined): Tone => percent === undefined ? "unknown" : percent > 90 ? "high" : percent > 70 ? "warn" : "ok";
 const levelOf = (percent: number | undefined) => percent === undefined || percent <= 0 ? 0 : percent > 90 ? 3 : percent > 70 ? 2 : 1;
-const knownUnits = (units: unknown) => typeof units === "number" && Number.isSafeInteger(units) && units >= 0 ? units : undefined;
-const unitBadge = (units: number | undefined) => ` ${String(units ?? "?").padStart(2)} AU `;
+const knownCount = (count: unknown) => typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+// The badge text is the single source of the rendered and re-strike width; known counts keep at least two digits.
+const unitBadge = (units: number | undefined) => ` ${units === undefined ? " ?" : String(units).padStart(2, "0")} AU `;
+// Fixed eight-cell compaction plate: 00–99, then 99+ in the trailing pad cell; ?? when unknown.
+const cmpPlate = (count: number | undefined) => count === undefined ? " CMP×?? " : count > 99 ? " CMP×99+" : ` CMP×${String(count).padStart(2, "0")} `;
+const cmpStyle = (count: number | undefined): Style => ({
+	...(count === undefined || count === 0 ? { fg: "text", bg: "plate" } : count <= 2 ? { fg: "text", bg: "violet" } : count <= 4 ? { fg: "field", bg: "pink" } : { fg: "field", bg: "high" }),
+	bold: true,
+});
 
 function compact(count: number): string {
 	return count >= 1_000_000 ? `${(count / 1_000_000).toFixed(1)}M` : count >= 1_000 ? `${(count / 1_000).toFixed(0)}k` : `${count}`;
@@ -271,7 +282,7 @@ export function startMotion(snapshot: FooterSnapshot, now: number, seed: number,
 		ghostAt: now + ghostDelay,
 		strikeAt: now + Math.max(ghostDelay, between(r, STRIKE_WAIT) * 0.5),
 		working: snapshot.activity?.working === true,
-		units: knownUnits(snapshot.activity?.units) ?? 0,
+		units: knownCount(snapshot.activity?.units) ?? 0,
 	};
 	return { ...state, cursor: r.cursor };
 }
@@ -312,7 +323,7 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 		set("percent", percent);
 	}
 	set("working", snapshot.activity?.working === true);
-	set("units", knownUnits(snapshot.activity?.units) ?? 0);
+	set("units", knownCount(snapshot.activity?.units) ?? 0);
 
 	// Start due events; none run during boot. A late timer keeps the planned start when within one tick.
 	if (!booting(next, now)) {
@@ -675,8 +686,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		repository = pathPaint(name, { bold: true }, BOOT_AT.github);
 		if (pr.kind === "open") repository += paint(" · ", settleStyle({ fg: "secondary" }, settle)) + paint(`PR #${pr.number}`, settleStyle({ bold: true }, settle)) + gap() + paint(safeText(pr.url), settleStyle({ fg: "secondary" }, settle));
 		else if (pr.kind === "unavailable") repository += paint(" · ", { fg: "secondary" }) + paint(`PR unavailable (${safeText(pr.reason)})`, { fg: "warn" });
-	} else if (github?.kind === "unknown") repository = paint(`unavailable (${safeText(github.reason)})`, { fg: "warn" });
-	else if (!github) repository = paint("pending", { fg: "secondary" });
+	} else if (github?.kind === "unknown") repository = paint(`GitHub unavailable (${safeText(github.reason)})`, { fg: "warn" });
+	else if (!github) repository = paint("GitHub pending", { fg: "secondary" });
 	// Word emphasis travels word by word; the thinking level latches acid last.
 	const word = (text: string, base: Style, w: number) => {
 		if (!inBoot) return paint(text, base);
@@ -704,7 +715,10 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const tag = tagText ? chip(tagText, tagStyle, BOOT_AT.tag) : "";
 
 	/* ---------- activity: lamp, ROOT and the exact AU count ---------- */
-	const activity = snapshot.activity, units = knownUnits(activity?.units), pulse = frame.pulse;
+	const activity = snapshot.activity, units = knownCount(activity?.units), pulse = frame.pulse;
+	// CMP is always shown. Boot swaps the approved pair for two ticks, which keeps its contrast.
+	const compactions = knownCount(snapshot.compactions), cmpText = cmpPlate(compactions), cmpBase = cmpStyle(compactions);
+	const cmp = inBoot && k < 2 ? { ...cmpBase, fg: cmpBase.bg, bg: cmpBase.fg } : cmpBase;
 	const lamp: Cell = !activity ? cell("╱", "graphic", "surface")
 		: cell(" ", "text", activity.working && (pulse === null || lampOn(pulse)) ? "primary" : "surface");
 	const badgeStyle: Style = units === undefined ? GREY_PLATE : units === 0 ? { fg: "secondary", bg: "surface" } : { fg: "field", bg: "text", bold: true };
@@ -723,7 +737,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const add = (label: string, s: Style, value: string) => {
 			for (const line of wrap(paint(` ${label} `, s) + gap() + value, W)) lines.push(serialize(runPad(line, W)));
 		};
-		if (repository) add("GITHUB", { fg: "secondary" }, repository);
+		for (const line of wrap(paint(cmpText, cmp) + (repository ? gap() + repository : ""), W)) lines.push(serialize(runPad(line, W)));
 		// The lamp is a solid glyph here so wrapping never drops it as blank.
 		const lampText = paint(lamp.ch === " " ? "█" : lamp.ch, lamp.ch === " " ? { fg: lamp.bg, bg: lamp.bg } : lamp);
 		for (const line of wrap(lampText + gap() + paint(" ROOT ", root[0]) + gap() + paint(badge.map((c) => c.ch).join(""), badgeStyle), W)) lines.push(serialize(runPad(line, W)));
@@ -850,7 +864,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		return [...blanks(2), cell("▐", spine), cell(" "), ...big, cell(" "), ...caption, cell(" ")];
 	};
 
-	/* ---------- header: GitHub title, corners, standalone ┼ and the activity group ---------- */
+	/* ---------- header: CMP plate, GitHub title, corners, standalone ┼ and the activity group ---------- */
 	const drawn = inBoot ? k * 8 : W;
 	const titleNatural = repository ? visibleWidth(repository) : 0;
 	type Placement = { x: number; cells: Cell[] };
@@ -864,7 +878,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		return { x, cells: [...head, ...(withRail ? [cell(" "), ...rail] : []), ...blanks(fill), ...badge] };
 	};
 	let place: Placement, ownRow = false;
-	const fits = (p: Placement) => p.x >= G + 1 && (!repository || p.x - 1 - (G + 8) >= titleNatural);
+	// The CMP plate sits at G; repository text starts on the content column of the rows below.
+	const titleStart = G + P + 1;
+	const fits = (p: Placement) => p.x >= G + 1 && p.x - 1 >= (repository ? titleStart + titleNatural : G + P);
 	if (numeral) {
 		// ROOT's right edge meets the context divider; the badge's left background edge meets the captions.
 		const rootEnd = sideStart + 3, lab0 = sideStart + 5 + numeral.w, x = rootEnd - 8;
@@ -875,9 +891,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const candidates = [group(true), group(false)];
 		place = candidates.find(fits) ?? (ownRow = true, candidates.find((p) => p.x >= G + 1) ?? candidates[1]);
 	}
-	const titleWidth = Math.max(1, (ownRow ? W - G - 1 : place.x - 1) - (G + 8));
+	const titleWidth = Math.max(1, (ownRow ? W - G - 1 : place.x - 1) - titleStart);
 	const titleLines = repository ? wrap(repository, titleWidth) : [];
-	const label = !inBoot || k >= 2 ? paint(" GITHUB ", { fg: "secondary" }) : paint(" GITHUB ", { fg: "field", bg: "secondary", bold: true });
 	// Absolute placement on one row; untouched columns are ghostable field.
 	const placeRow = (items: { x: number; parts: Part[] }[]): Part[] => {
 		const row: Part[] = [];
@@ -897,11 +912,12 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const corner = (x: number, ch: string): Cell => ({ ...shown(x, cell(ch, "graphic")), ghost: true, frame: x < drawn });
 		items.push({ x: 0, parts: [...(G === 2 ? "┏━" : "┏")].map((ch, i) => corner(i, ch)) });
 		items.push({ x: W - G, parts: [...(G === 2 ? "━┓" : "┓")].map((ch, i) => corner(W - G + i, ch)) });
-		let titleEnd = G;
+		items.push({ x: G, parts: letters(cmpText, cmp) });
+		let titleEnd = G + P;
 		if (titleLines.length) {
-			const run = runOf(label + titleLines[0], 8 + titleWidth);
-			items.push({ x: G, parts: [run] });
-			titleEnd = G + run.width;
+			const run = runOf(titleLines[0], titleWidth);
+			items.push({ x: titleStart, parts: [run] });
+			titleEnd = titleStart + run.width;
 		}
 		const groupStart = ownRow ? W - G - 1 : place.x - 1;
 		if (MID - 2 > titleEnd && MID + 2 < groupStart) {
@@ -910,7 +926,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		}
 		if (!ownRow) items.push(activityItem(place));
 		header.push(placeRow(items));
-		for (const line of titleLines.slice(1)) header.push([...blanks(8, "field", true), ...runPad(line, M - 8)]);
+		for (const line of titleLines.slice(1)) header.push([...blanks(P + 1, "field", true), ...runPad(line, M - P - 1)]);
 		if (ownRow) header.push(placeRow([activityItem(place)]).slice(G, W - G));
 	}
 	const actRow = ownRow ? header.length - 1 : 0;
