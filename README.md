@@ -6,13 +6,12 @@ It shows, in a framed Marathon-inspired “Acid / Black” instrument panel with
 
 - a **CMP** plate that always leads the frame title with the selected session branch's successful compaction count (`CMP×00`–`CMP×99`, `CMP×99+` above 99, `CMP×??` when unknown), followed by the GitHub repository and open-pull-request state when available;
 - fixed **Launch** and agent-reported **Active** paths as their parent/current directories, for example `Projects/pi-status-bar`;
-- active Git branch and clean/modified state;
-- the repository's primary checkout (`2.1 MN`) when Active is a linked worktree;
+- Active Git details on an unnumbered row below its complete path: a grey `⑂` plate, white branch plate, and clean/modified/status-unavailable plate;
 - a graduated context gauge with 70%/90% thresholds and, at 100+ columns, a large percentage numeral;
 - the model and thinking level, plus statuses from other extensions;
 - a **ROOT** working lamp and an independent **AU (Active Units)** badge from the optional public pi-subagents fleet API.
 
-Token totals, cache metrics, and cost are intentionally omitted. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
+Full PR URLs and primary-checkout rows are omitted from the footer; validated PR URLs and primary-checkout inspection data are unchanged. Token totals, cache metrics, and cost are intentionally omitted. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
 
 The native v9 frame has corners and a standalone calibration cross, without a continuous top rule or ruler ticks. Plates, context squares and ROOT/AU panels animate decoratively; readouts, counts and current digit shapes stay truthful. Run `/footer-motion off` to settle the animation for the current session, `/footer-motion on` to resume it, or `/footer-motion` to toggle. The choice is not saved.
 

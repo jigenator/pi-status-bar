@@ -116,7 +116,8 @@ test("wide v9 snapshot: numbered 8-cell plates, inline readout, scale, numeral a
 	assert.deepEqual(plain(lines), [
 		"┏━ CMP×04  jigenator/pi-status-bar                          ┼                             ROOT  █·█·█·······   03 AU  ━┓",
 		"┃  01 LDR  Projects/pi-status-bar                                                                                      ┃",
-		"   02 ACT  Projects/pi-status-bar  main   modified                                            ▐ █ █ ▄█    █▀█ %         ",
+		"   02 ACT  Projects/pi-status-bar                                                                                       ",
+		"            ⑂   main   modified                                                               ▐ █ █ ▄█    █▀█ %         ",
 		"   03 CTX   41.8%/272k ██████████████                ┃           ┃                            ▐ ▀▀█  █    █▀█ USED      ",
 		"           0     10    20    30    40    50    60    70    80    90   100                     ▐   ▀ ▀▀▀ ▀ ▀▀▀ of 272k   ",
 		"┃  04 MDL  openai-codex/gpt-6-astra · thinking xhigh                                                                   ┃",
@@ -131,17 +132,17 @@ test("wide v9 snapshot: numbered 8-cell plates, inline readout, scale, numeral a
 	assert.equal(text(g[0]).indexOf("jigenator"), 11); assert.equal(text(g[1]).indexOf("Projects"), 11);
 	assert.ok(g[1].slice(2, 10).every((c) => c.fg === "text" && c.bg === "plate" && c.bold));
 	assert.ok(g[2].slice(2, 10).every((c) => c.fg === "field" && c.bg === "primary"), "02 ACT acid plate");
-	assert.ok(g[5].slice(2, 10).every((c) => c.fg === "field" && c.bg === "text") && g[5][11].bg === "surface", "04 MDL plate on the model band");
+	assert.ok(g[6].slice(2, 10).every((c) => c.fg === "field" && c.bg === "text") && g[6][11].bg === "surface", "04 MDL plate on the model band");
 	assert.ok(lines[1].includes(`${fg("#cfcfcf")}${bg("#000000")}Projects/pi-status-bar`));
 	// Readout inline over the gauge: one real blank cell either side, on the fill or track itself.
-	const gauge = g[3].slice(11, 71);
+	const gauge = g[4].slice(11, 71);
 	assert.equal(text(gauge.slice(0, 12)), " 41.8%/272k ");
 	assert.ok(gauge.slice(0, 12).every((c) => c.bg === "primary" && c.fg === "field"), "readout over lit cells");
 	assert.ok(gauge.slice(12, 26).every((c) => c.ch === "█" && c.fg === "primary" && c.bg === "primary"), "contiguous full cells, not browser hairlines");
 	assert.ok(gauge.slice(26).every((c) => c.ch === " " || c.ch === "┃"));
 	assert.equal(gauge.filter((c) => c.bg === "primary").length, Math.ceil(41.8 * 60 / 100));
 	assert.ok(gauge.some((c) => c.bg === "wz") && gauge.some((c) => c.bg === "hz"), "20% warning/high zone tints");
-	assert.deepEqual([g[3][11 + 42], g[3][11 + 54]].map((c) => [c.ch, c.fg]), [["┃", "warn"], ["┃", "high"]]);
+	assert.deepEqual([g[4][11 + 42], g[4][11 + 54]].map((c) => [c.ch, c.fg]), [["┃", "warn"], ["┃", "high"]]);
 	// Scale has numbers only: no decorative tick glyphs.
 	assert.doesNotMatch(plain(lines).join("\n"), /[╵┬─]/);
 	// Thread Rail: lamp, blank, bright ROOT, unit marks and the exact AU badge.
@@ -152,8 +153,8 @@ test("wide v9 snapshot: numbered 8-cell plates, inline readout, scale, numeral a
 	assert.ok(r.badge.every((c) => c.bg === "text" && c.fg === "field"));
 	assert.equal(r.marks, "█·█·█·······");
 	// ROOT's right edge meets the divider; the badge's left background edge meets the captions.
-	assert.equal(r.rootAt + 5, plain(lines)[2].indexOf("▐"));
-	assert.equal(r.badgeAt, plain(lines)[3].indexOf("USED"));
+	assert.equal(r.rootAt + 5, plain(lines)[3].indexOf("▐"));
+	assert.equal(r.badgeAt, plain(lines)[4].indexOf("USED"));
 	assert.equal(g[0][60].ch, "┼", "standalone centre cross");
 	// Pi's public color conversion downsamples for 256-color terminals.
 	const indexed = renderFooter(session(), 120, hostTheme("256color")).join("\n");
@@ -168,8 +169,8 @@ test("Thread Rail stays aligned and truthful across context, numeral width, coun
 			for (const working of [true, false]) {
 				const lines = renderFooter(session(percent, { working, units }), 120, theme), g = grid(lines), r = rail(g[0]);
 				const label = `${percent}/${units}/${working}`;
-				assert.equal(r.rootAt + 5, plain(lines)[2].indexOf("▐"), label);
-				assert.equal(r.badgeAt, Math.max(plain(lines)[3].lastIndexOf("USED"), plain(lines)[3].lastIndexOf("UNKNOWN")), label);
+				assert.equal(r.rootAt + 5, plain(lines)[3].indexOf("▐"), label);
+				assert.equal(r.badgeAt, Math.max(plain(lines)[4].lastIndexOf("USED"), plain(lines)[4].lastIndexOf("UNKNOWN")), label);
 				assert.equal(text(r.badge), badges[String(units)], label);
 				assert.ok(r.root.every((c) => c.bg === "primary"), `${label}: ROOT stays bright`);
 				assert.equal(r.lamp.bg, working ? "primary" : "surface", label);
@@ -257,7 +258,7 @@ test("CMP plate: fixed eight cells, approved colour pairs, 99+ and Unknown, alwa
 	}
 	// Repository/PR text and its wrapped continuations start on the rows' content column (G + P + 1).
 	const long = { ...session(), pullRequest: { kind: "open", number: 123456, url: "https://github.com/owner/repo/pull/123456?" + "q=".repeat(30) } } as FooterSnapshot;
-	long.workspace!.github = { kind: "repository", name: "owner/" + "repository-name-".repeat(4), url: "https://github.com/owner/r" };
+	long.workspace!.github = { kind: "repository", name: "owner/" + "repository-name-".repeat(10), url: "https://github.com/owner/r" };
 	for (let width = 40; width <= 160; width++) {
 		const out = rows(long, width), { G, P } = metrics(width), column = G + P + 1, ldr = out.findIndex((row) => row.includes("01 LDR"));
 		assert.equal(out[ldr][column - 1], " "); assert.notEqual(out[ldr][column], " ", `${width}: rows' content column`);
@@ -266,19 +267,18 @@ test("CMP plate: fixed eight cells, approved colour pairs, 99+ and Unknown, alwa
 		assert.ok(continuations.length > 0, `${width}: wraps`);
 		// Pi's word wrap may keep the leading space of " · ", so a row may start one cell further in, never earlier.
 		const starts = continuations.map((row) => row.replace(/┃/, " ").search(/\S/));
-		assert.ok(starts.every((x) => x >= column) && starts.includes(column), `${width}: ${starts}`);
-		assert.equal(out.slice(0, ldr).join("").replace(/[\s┃┏┓━┼]/g, "").includes("PR#123456https://github.com/owner/repo/pull/123456?" + "q=".repeat(30)), true, `${width}: nothing dropped`);
+		assert.ok(starts.every((x) => x >= column), `${width}: ${starts}`);
+		assert.equal(out.slice(0, ldr).join("").replace(/[\s┃┏┓━┼]/g, "").includes("PR#123456"), true, `${width}: nothing dropped`);
 	}
 });
 
 test("responsive compact, narrow and minimal layouts keep every field and the activity count", () => {
 	const f = fixture();
 	assert.deepEqual(rows(f, 100), [
-		"┏━ CMP×12  owner/repo · PR #42 https://github.com/owner/repo/pull/42                              ━┓",
-		"┃                                                                     ROOT  █·█·█·······   03 AU   ┃",
-		"   01 LDR  /launch unrelated                                                                        ",
-		"   02 ACT  /repo/worktree  feature/ui   modified                                                    ",
-		"   2.1 MN  /repo  release   clean                                         ▐ ▀▀█ █▀▀   █▀█ %         ",
+		"┏━ CMP×12  owner/repo · PR #42                    ┼                   ROOT  █·█·█·······   03 AU  ━┓",
+		"┃  01 LDR  /launch unrelated                                                                       ┃",
+		"   02 ACT  /repo/worktree                                                                           ",
+		"            ⑂   feature/ui   modified                                     ▐ ▀▀█ █▀▀   █▀█ %         ",
 		"   03 CTX   25.0%/128k █                     ┃         ┃                  ▐ █▀▀ ▀▀█   █ █ USED      ",
 		"           0                       50        70        90  100            ▐ ▀▀▀ ▀▀▀ ▀ ▀▀▀ of 128k   ",
 		"   04 MDL  provider/model · thinking high                                                           ",
@@ -289,8 +289,8 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 	assert.deepEqual(rows(f, 72), [
 		"┏━ CMP×12  owner/repo               ┼      ROOT  █·█·█·······  03 AU  ━┓",
 		"┃  01 LDR  /launch unrelated                                           ┃",
-		"   02 ACT  /repo/worktree  feature/ui   modified                        ",
-		"   2.1 MN  /repo  release   clean                                       ",
+		"   02 ACT  /repo/worktree                                               ",
+		"            ⑂   feature/ui   modified                                   ",
 		"   03 CTX   25.0%/128k                     ┃         ┃                  ",
 		"           0                      50       70        90  100            ",
 		"   04 MDL  provider/model · thinking high                               ",
@@ -299,13 +299,10 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 	]);
 	f.pullRequest = { kind: "open", number: 42, url: "https://github.com/owner/repo/pull/42" };
 	assert.deepEqual(rows(f, 48), [
-		"┏ CMP×12  owner/repo · PR #42                  ┓",
-		"┃         https://github.com/owner/repo/pull/4 ┃",
-		"          2                                     ",
-		"                    ROOT  █·█·█·······  03 AU   ",
-		"  01 LDR  /launch unrelated                     ",
-		"  02 ACT  /repo/worktree  feature/ui   modified ",
-		"  2.1 MN  /repo  release   clean                ",
+		"┏ CMP×12  owner/repo · PR #42    ROOT   03 AU  ┓",
+		"┃ 01 LDR  /launch unrelated                    ┃",
+		"  02 ACT  /repo/worktree                        ",
+		"           ⑂   feature/ui   modified            ",
 		"  03 CTX   25.0%/128k      ┃    ┃               ",
 		"          0           50   70     100           ",
 		"  04 MDL  provider/model · thinking high        ",
@@ -315,14 +312,10 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 	// Below the framed minimum, plates become inline labels and values wrap beneath them.
 	assert.deepEqual(rows(f, 30), [
 		" CMP×12  owner/repo · PR #42  ",
-		"https://github.com/owner/repo/",
-		"pull/42                       ",
 		"█  ROOT   03 AU               ",
 		" 01 LDR  /launch unrelated    ",
 		" 02 ACT  /repo/worktree       ",
-		"feature/ui   modified         ",
-		" 2.1 MN  /repo  release       ",
-		"clean                         ",
+		" ⑂   feature/ui   modified    ",
 		" 03 CTX   25.0%/128k          ",
 		" 04 MDL  provider/model ·     ",
 		"thinking high                 ",
@@ -350,8 +343,10 @@ test("paths display immediate parent/current only; stored paths, home and edge c
 	const before = structuredClone(f);
 	const out = rows(f, 160);
 	assert.match(out[1], /01 LDR {2}Projects\/pi-status-bar {2}/);
-	assert.match(out[2], /02 ACT {2}worktrees\/feature {2}feature\/ui/);
-	assert.match(out[3], /2\.1 MN {2}Projects\/repo {2}release/);
+	assert.match(out[2], /02 ACT {2}worktrees\/feature {2}/);
+	assert.doesNotMatch(out[2], /feature\/ui/);
+	assert.match(out[3], /⑂ {3}feature\/ui {3}modified/);
+	assert.doesNotMatch(out.join("\n"), /MN|Projects\/repo|release/);
 	assert.match(out[0], /CMP×12  owner\/repo /);
 	assert.deepEqual(f, before, "display shortening must not change stored paths or URLs");
 	const launch = (path: string, home = f.homePath) => { f.launchPath = path; f.homePath = home; return rows(f, 160)[1].slice(11).trim().split(/ {2,}/)[0]; };
@@ -379,10 +374,10 @@ test("truthful none, pending, unknown, unborn/detached, missing main and PR stat
 	f.workspace!.github = { kind: "none", reason: "No GitHub remote" };
 	out = rows(f, 120);
 	assert.doesNotMatch(out.join("\n"), /GitHub|PR/); assert.match(out[0], /^┏━ CMP×12 {20,}┼/);
-	assert.match(out.join("\n"), /\/repo {2}release {3}clean/);
+	assert.match(out[3], /⑂ {3}feature\/ui {3}modified/);
 	f.workspace = undefined;
 	out = rows(f, 120);
-	assert.match(out[0], /CMP×12  GitHub pending /); assert.match(out[2], /\/repo\/worktree Git pending/);
+	assert.match(out[0], /CMP×12  GitHub pending /); assert.match(out[2], /02 ACT {2}\/repo\/worktree {2}/); assert.match(out[3], /Git pending/);
 	f.workspace = { path: f.activePath, git: { kind: "unknown", reason: "timeout" }, github: { kind: "unknown", reason: "ambiguous" } };
 	out = rows(f, 120);
 	assert.match(out.join("\n"), /Git unavailable \(timeout\)/); assert.match(out[0], /CMP×12  GitHub unavailable \(ambiguous\)/); assert.doesNotMatch(out.join("\n"), /clean|No open PR/);
@@ -395,13 +390,93 @@ test("truthful none, pending, unknown, unborn/detached, missing main and PR stat
 		f.pullRequest = pr;
 		out = rows(f, 120);
 		assert.ok(out[0].includes(expected), out[0]); assert.doesNotMatch(out.join("\n"), /No open PR|PR not applicable|PR #/);
-		assert.match(out.join("\n"), /detached {3}status unavailable  \(timeout\)/); assert.match(out.join("\n"), /2\.1 MN {2}unavailable \(pruned\)/);
+		assert.match(out.join("\n"), /detached {3}status unavailable  \(timeout\)/); assert.doesNotMatch(out.join("\n"), /MN|pruned/);
 	}
 	repository(f).active.revision = "abc123";
 	assert.match(rows(f, 120).join("\n"), /detached @abc123/);
 	repository(f).active.branch = "main"; repository(f).active.revision = null;
 	repository(f).main = repository(f).active; delete repository(f).mainUnavailableReason;
 	assert.doesNotMatch(rows(f, 120).join("\n"), /2\.1 MN/);
+});
+
+test("directory-first Git details follow every path wrap without an ACT continuation plate", () => {
+	const f = fixture();
+	f.activePath = "/Users/example/" + "parent-directory-".repeat(8) + "/" + "current-directory-".repeat(8);
+	repository(f).active.branch = "feat/" + "long/slash-branch/".repeat(8);
+	for (const width of [12, 30, 40, 48, 72, 100, 120, 160]) {
+		const lines = renderFooter(f, width, theme), out = plain(lines);
+		const fork = out.findIndex((row) => row.includes("⑂"));
+		const before = content(lines.slice(0, fork));
+		assert.ok(before.includes(("parent-directory-".repeat(8) + "/" + "current-directory-".repeat(8))), `${width}: complete path precedes fork`);
+		assert.doesNotMatch(before, /feat|long\/slash-branch|modified/);
+		assert.ok(!out[fork - 1].includes("⑂"));
+		const details = content(lines.slice(fork));
+		assert.ok(details.includes("feat/" + "long/slash-branch/".repeat(8)), `${width}: branch retained`);
+		assert.ok(details.includes("modified"));
+		if (width >= 40) {
+			const { G, P } = metrics(width), ctx = out.findIndex((row) => row.includes("03 CTX"));
+			for (const row of grid(lines).slice(fork, ctx)) assert.ok(row.slice(G, G + P).every((c) => c.ch === " " && c.bg === "field"), `${width}: unnumbered plain continuation`);
+		}
+	}
+});
+
+test("fork grey plate, branch white plate and truthful status palettes survive layout separation", () => {
+	for (const dirty of [false, true, null]) for (const width of [30, 40, 72, 120]) {
+		const f = fixture(); repository(f).active.dirty = dirty;
+		const rendered = grid(renderFooter(f, width, theme));
+		const forkRow = rendered.findIndex((row) => text(row).includes("⑂")), line = rendered[forkRow];
+		const at = text(line).indexOf("⑂");
+		assert.deepEqual(line.slice(at - 1, at + 2).map((c) => [c.ch, c.fg, c.bg]), [[" ", "text", "plate"], ["⑂", "text", "plate"], [" ", "text", "plate"]]);
+		const ctxRow = rendered.findIndex((row) => text(row).includes("03 CTX"));
+		const all = rendered.slice(forkRow, ctxRow).flat(), branch = all.findIndex((c) => c.ch === "f" && c.bg === "text");
+		assert.ok(branch >= 0);
+		assert.ok(all.slice(branch, branch + "feature/ui".length).every((c) => c.fg === "field" && c.bg === "text" && c.bold), `${dirty}@${width}: white branch plate`);
+		const label = dirty === null ? "status unavailable" : dirty ? "modified" : "clean";
+		// Collect the status plate across wraps, excluding the fork and branch before it.
+		const status = all.slice(branch + "feature/ui".length).filter((c) => c.bg === (dirty === null ? "plate" : dirty ? "warn" : "primary"));
+		assert.equal(text(status).replace(/\s/g, ""), label.replace(/\s/g, ""));
+		assert.ok(status.every((c) => c.fg === (dirty === null ? "text" : "field") && c.bold), `${dirty}@${width}: status palette`);
+	}
+});
+
+test("primary-checkout metadata and PR URL are display-only omissions at every width and motion frame", () => {
+	const f = fixture(), hidden = structuredClone(f), git = repository(hidden);
+	git.main = { path: "/secret-parent/hidden-primary", branch: "hidden-primary-branch", revision: "hidden-revision", dirty: null, error: "hidden-primary-error" };
+	git.mainUnavailableReason = "hidden-primary-unavailable";
+	const absent = structuredClone(hidden); repository(absent).main = null;
+	const before = structuredClone(hidden), frames = eventFrames(f);
+	for (let width = 1; width <= 160; width++) for (const frame of frames) {
+		const expected = renderFooter(f, width, theme, frame);
+		assert.deepEqual(renderFooter(hidden, width, theme, frame), expected, `${width}: no primary data rendered`);
+		assert.deepEqual(renderFooter(absent, width, theme, frame), expected, `${width}: no primary unavailable row`);
+		const out = content(expected);
+		assert.doesNotMatch(out, /MN|release|https:|github\.com|hidden-primary/);
+		if (width >= 3) assert.ok(out.includes("PR#42"), `${width}: keep PR number`);
+	}
+	assert.deepEqual(hidden, before, "render does not mutate tool/domain data");
+});
+
+test("plain, pending, unavailable, detached and unborn Git states remain below paths and width safe", () => {
+	const none = fixture(); none.workspace!.git = { kind: "none" };
+	const pending = fixture(); pending.workspace = undefined;
+	const unknown = fixture(); unknown.workspace!.git = { kind: "unknown", reason: "timeout" };
+	const dirtyUnknown = fixture(); repository(dirtyUnknown).active.dirty = null; repository(dirtyUnknown).active.error = "status timeout";
+	const detached = fixture(); repository(detached).active.branch = null;
+	const unborn = fixture(); repository(unborn).active.branch = "new-branch"; repository(unborn).active.revision = null;
+	for (const [f, message] of [[none, ""], [pending, "Gitpending"], [unknown, "Gitunavailable(timeout)"], [dirtyUnknown, "statusunavailable"], [detached, "detached@abcdef"], [unborn, "new-branch"]] as const) {
+		const frames = eventFrames(f);
+		for (let width = 1; width <= 160; width++) for (const frame of frames) {
+			const lines = renderFooter(f, width, theme, frame), out = content(lines);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${message}@${width}`);
+			if (width < 3) continue;
+			assert.ok(out.includes(message), `${message}@${width}: identifiable`);
+			if (message) assert.ok(out.indexOf("/repo/worktree") < out.indexOf(message), `${message}@${width}: path first`);
+			else assert.doesNotMatch(out, /⑂|Gitpending|clean|modified|feature/);
+			if (f === dirtyUnknown || f === unknown) assert.doesNotMatch(out, /clean|modified/);
+		}
+		const out = rows(f, 72), act = out.findIndex((line) => line.includes("02 ACT")), ctx = out.findIndex((line) => line.includes("03 CTX"));
+		assert.equal(ctx - act, message ? 2 : 1, `${message}: no invented empty Git line`);
+	}
 });
 
 // Gauge cells by background: a contiguous run of track/fill cells starting after the CTX plate and gap.
@@ -482,7 +557,8 @@ test("every line fits widths 1..160 for each state and motion frame, and no fiel
 			}
 			if (width < 3) continue;
 			const out = content(renderFooter(f, width, theme));
-			for (const value of ["👩‍💻/" + "long".repeat(30), "長い/" + "path-segment-".repeat(12), "branch-name-".repeat(12) + "👩🏽‍🚀", "PR#123456", "q=".repeat(30), "y".repeat(50), "verylong".repeat(10) + "tail", "○🐴ponytail:⚡FULL", "1234AU", "ROOT", "CMP×99+"]) {
+			assert.doesNotMatch(out, /https:|github\.com|q=/, `width ${width}: no full PR URL`);
+			for (const value of ["👩‍💻/" + "long".repeat(30), "長い/" + "path-segment-".repeat(12), "branch-name-".repeat(12) + "👩🏽‍🚀", "PR#123456", "⑂", "y".repeat(50), "verylong".repeat(10) + "tail", "○🐴ponytail:⚡FULL", "1234AU", "ROOT", "CMP×99+"]) {
 				assert.ok(out.includes(value.replace(/\s/g, "")), `width ${width} dropped ${value}`);
 			}
 		}
@@ -571,7 +647,7 @@ test("decoration is a pure function of supplied time, seed and memory; values st
 		for (const token of tokens) assert.ok(out.includes(token), `${now}: ${token}`);
 		assert.equal(text(rail(grid(lines)[0]).badge).replace(/[▓▚▞░]/g, " "), " 03 AU ", `${now}: exact count including header draw-in`);
 		// Fill extent is truthful: the fill-edge cell is solid and nothing past it is fill-coloured.
-		const gauge = grid(lines)[3].slice(11, 71);
+		const gauge = grid(lines)[4].slice(11, 71);
 		if (frame.boot === Infinity) assert.deepEqual([gauge[lit - 1].ch, gauge[lit - 1].bg], ["█", "primary"], `${now}`);
 		assert.ok(gauge.slice(lit).every((c) => !["primary"].includes(c.bg) && c.fg !== "primary"), `${now}: no fake extent`);
 		frames++;
@@ -593,17 +669,17 @@ test("boot: varied treatments on real values, header draw-in, then a settled fra
 	assert.equal(text(first[0]).slice(0, 2), "  ", "frame corners draw in");
 	assert.match(text(first[0]), /CMP×04  jigenator\/pi-status-bar/, "plate and title are present from the first frame");
 	assert.ok(first[2].slice(2, 10).every((c) => c.bg === "field" && c.fg === "primary"), "plates start outlined");
-	assert.ok(first[3].slice(12, 22).every((c) => c.underline && !c.bold), "readout characters type-lock");
-	assert.equal(text(first[3].slice(11, 23)), " 41.8%/272k ", "exact readout from the first frame");
-	assert.ok(first[3].slice(23, 37).every((c) => c.ch === "░" || c.ch === "▒"), "lit cells acquire texture at the true extent");
-	assert.equal(first[3].slice(37, 71).filter((c) => c.fg === "primary" || c.bg === "primary").length, 0, "no fake count-up");
-	assert.match(text(first[2]).slice(90), /█/, "boot shows only the current numeral shape");
-	assert.ok(first.slice(2, 5).flatMap((row) => row.slice(94, 107)).filter((c) => "█▀▄".includes(c.ch)).every((c) => c.fg === "graphic"), "current squares acquire color from grey");
+	assert.ok(first[4].slice(12, 22).every((c) => c.underline && !c.bold), "readout characters type-lock");
+	assert.equal(text(first[4].slice(11, 23)), " 41.8%/272k ", "exact readout from the first frame");
+	assert.ok(first[4].slice(23, 37).every((c) => c.ch === "░" || c.ch === "▒"), "lit cells acquire texture at the true extent");
+	assert.equal(first[4].slice(37, 71).filter((c) => c.fg === "primary" || c.bg === "primary").length, 0, "no fake count-up");
+	assert.match(text(first[3]).slice(90), /█/, "boot shows only the current numeral shape");
+	assert.ok(first.slice(3, 6).flatMap((row) => row.slice(94, 107)).filter((c) => "█▀▄".includes(c.ch)).every((c) => c.fg === "graphic"), "current squares acquire color from grey");
 	const pieces = first[1].slice(11, 33);
 	assert.ok(pieces.some((c) => c.bg === "surface"), "path pieces wait on a grey band");
 	const mid = grid(at(8 * MOTION_TICK_MS));
 	assert.ok(mid[2].slice(11, 33).some((c) => c.bg === "primary") || mid[2].slice(11, 33).some((c) => c.bg === "surface"), "active path locks piece by piece");
-	assert.ok(mid[5].slice(11).some((c) => c.bg === "surface" && c.fg === "secondary"), "model words wait their turn");
+	assert.ok(mid[6].slice(11).some((c) => c.bg === "surface" && c.fg === "secondary"), "model words wait their turn");
 	// Values change during boot and are shown at once.
 	const changed = session(93.3), s2 = advanceMotion(state, changed, 300);
 	assert.match(plain(renderFooter(changed, 120, theme, motionFrame(s2, 300))).join("\n"), / 93\.3%\/272k .*▲ HIGH/);
@@ -676,7 +752,7 @@ test("reconstruction immediately uses current geometry and pixel occupancy throu
 			const actualRail = rail(actual[0]);
 			assert.equal(actualRail.rootAt, targetRail.rootAt, `${percent}: current divider alignment immediately`);
 			assert.equal(actualRail.badgeAt, targetRail.badgeAt, `${percent}: current caption alignment immediately`);
-			for (let row = 2; row <= 4; row++) {
+			for (let row = 3; row <= 5; row++) {
 				const start = text(settled[row]).indexOf("▐") + 2, end = targetRail.badgeAt - 1;
 				assert.deepEqual(actual[row].slice(start, end).map(pixels), settled[row].slice(start, end).map(pixels), `${percent} +${dt}: no old-only pixels or invented shape`);
 			}
@@ -687,8 +763,8 @@ test("reconstruction immediately uses current geometry and pixel occupancy throu
 	const unknown = session(null), boot = startMotion(unknown, 0, 9, true);
 	const early = grid(renderFooter(unknown, 120, theme, motionFrame(boot, 400)));
 	const late = grid(renderFooter(unknown, 120, theme, motionFrame(boot, 950)));
-	assert.ok(early.slice(2, 5).flatMap((row) => row.slice(94, 107)).some((c) => "█▀▄".includes(c.ch) && c.fg === "secondary"), "Unknown reconstructs with a lighter grey before settling grey");
-	assert.ok(late.slice(2, 5).flatMap((row) => row.slice(94, 107)).filter((c) => "█▀▄".includes(c.ch)).every((c) => c.fg === "graphic"));
+	assert.ok(early.slice(3, 6).flatMap((row) => row.slice(94, 107)).some((c) => "█▀▄".includes(c.ch) && c.fg === "secondary"), "Unknown reconstructs with a lighter grey before settling grey");
+	assert.ok(late.slice(3, 6).flatMap((row) => row.slice(94, 107)).filter((c) => "█▀▄".includes(c.ch)).every((c) => c.fg === "graphic"));
 });
 
 test("re-strike plans: fresh random coverage, ROOT/AU about half the time, whole-plan shuffle with no fixed tail", () => {
@@ -705,7 +781,8 @@ test("re-strike plans: fresh random coverage, ROOT/AU about half the time, whole
 	const tails = new Set<string>(), shapes = new Set<string>(), xs = { root: new Set<number>(), badge: new Set<number>() };
 	for (let seed = 1; seed <= 400; seed++) {
 		const items = strikeAt(f, seed).strike!.items as { fam: string; zone: string; key?: string; x: number; start: number }[];
-		assert.ok(items.length > 0 && items.every((item) => item.fam === "restrike"));
+		assert.ok(items.length > 0 && items.every((item) => item.fam === "restrike"), `seed ${seed}`);
+		assert.ok(items.every((item) => item.key !== "main"), `seed ${seed}: no obsolete MN targets`);
 		plans.push(items);
 		shapes.add(JSON.stringify(items.map((item) => [item.zone, item.key, item.x, item.start])));
 		const { first } = unitStart(items);
@@ -728,11 +805,19 @@ test("re-strike plans: fresh random coverage, ROOT/AU about half the time, whole
 		if (!panel.length) continue;
 		const settled = grid(renderFooter(f, 120, theme));
 		const hits = panel.some((item: { zone: string; row: number; x: number }) => {
-			const c = settled[2 + item.row][(item.zone === "digits" ? 96 : 110) + item.x];
+			const c = settled[3 + item.row][(item.zone === "digits" ? 96 : 110) + item.x];
 			return c && c.ch !== " ";
 		});
 		assert.ok(hits, `seed ${seed}`);
 	}
+});
+
+test("re-strike seed 279 retains a plate anchor, finite timing and no obsolete MN targets", () => {
+	const f = session(), state = strikeAt(f, 279), event = state.strike!;
+	assert.ok(event.items.length > 0);
+	assert.ok(Number.isFinite(event.dur) && event.dur > 0);
+	assert.ok(Number.isFinite(state.strikeAt) && Number.isFinite(nextMotionDelay(state, event.at)));
+	assert.ok(event.items.every((item) => item.fam !== "restrike" || item.zone !== "plate" || String(item.key) !== "main"));
 });
 
 test("widened AU re-strikes cover every badge cell and stay inside the current badge after count changes", () => {
@@ -769,7 +854,7 @@ test("re-strikes and ghosts touch only plates, panel ink, ROOT/AU and free frame
 	let struck = { root: 0, badge: 0, plate: 0, panel: 0, ghost: 0 };
 	for (const [percent, units, working] of [[41.8, 3, true], [0, 0, false], [null, null, true], [100, 12, false], [93.3, 99, true]] as const) {
 		const f = session(percent, { working, units });
-		const settledLines = renderFooter(f, 120, theme), settled = grid(settledLines), r0 = rail(settled[0]), divider = plain(settledLines)[2].indexOf("▐");
+		const settledLines = renderFooter(f, 120, theme), settled = grid(settledLines), r0 = rail(settled[0]), divider = plain(settledLines)[3].indexOf("▐");
 		const protectedCols = new Set<number>([r0.rootAt - 3, r0.rootAt - 2, r0.rootAt - 1, ...Array.from({ length: 13 }, (_, i) => r0.rootAt + 6 + i), r0.badgeAt - 1, r0.badgeAt + 7]);
 		for (let seed = 1; seed <= 60; seed++) {
 			const s = strikeAt(f, seed);
@@ -783,10 +868,10 @@ test("re-strikes and ghosts touch only plates, panel ink, ROOT/AU and free frame
 						const where = `${percent}/${units} seed ${seed} k ${k} r${r}c${col} ${JSON.stringify(base)}→${JSON.stringify(c)}`;
 						const inRoot = r === 0 && col >= r0.rootAt && col < r0.rootAt + 6, inBadge = r === 0 && col >= r0.badgeAt && col < r0.badgeAt + 7;
 						const inPlate = r >= 1 && col >= 2 && col < 10 && base.bg !== "field";
-						const inPanel = r >= 2 && r <= 4 && col >= divider + 2 && base.ch !== " ";
+						const inPanel = r >= 3 && r <= 5 && col >= divider + 2 && base.ch !== " ";
 						const free = base.ch === " " && base.bg !== "default" || "┏┓┗┛━┃".includes(base.ch);
 						assert.ok(!(r === 0 && protectedCols.has(col)), `lamp, separator, unit marks and margins are protected: ${where}`);
-						assert.ok(!((r === 3 || r === 4) && col >= 11 && col <= divider), `gauge, readout, scale and divider are protected: ${where}`);
+						assert.ok(!((r === 4 || r === 5) && col >= 11 && col <= divider), `gauge, readout, scale and divider are protected: ${where}`);
 						if (inRoot || inBadge || inPlate || inPanel) {
 							if (base.ch !== " ") {
 								assert.equal(c.ch, base.ch, `characters stay exact: ${where}`);
@@ -817,8 +902,8 @@ test("re-strikes and ghosts touch only plates, panel ink, ROOT/AU and free frame
 			for (let k = 0; k < s.ghost.dur; k++) {
 				const out = grid(renderFooter(f, 120, theme, { ...motionFrame(s, s.ghost.at + k * MOTION_TICK_MS), strike: undefined, pulse: null, cal: 0, glitch: undefined }));
 				for (let col = r0.rootAt - 3; col <= r0.badgeAt + 7; col++) assert.deepEqual(out[0][col], settled[0][col], `seed ${seed} col ${col}`);
-				for (const r of [1, 2, 3, 4, 5, 6]) assert.deepEqual(out[r].slice(2, 10), settled[r].slice(2, 10), `plates untouched by ghosts, row ${r}`);
-				assert.deepEqual(out[3].slice(11, 94), settled[3].slice(11, 94));
+				for (const r of [1, 2, 3, 4, 5, 6, 7]) assert.deepEqual(out[r].slice(2, 10), settled[r].slice(2, 10), `plates untouched by ghosts, row ${r}`);
+				assert.deepEqual(out[4].slice(11, 94), settled[4].slice(11, 94));
 			}
 		}
 	}
@@ -845,11 +930,11 @@ test("live geometry and values during events: changed context, counts and Workin
 		for (const [percent, units, working] of [[100, 12, false], [null, 99, true], [0, 0, false], [41.8, null, true]] as const) {
 			const f = session(percent, { working, units }), lines = renderFooter(f, 120, theme, frame), out = plain(lines);
 			const r = rail(grid(lines)[0]);
-			assert.equal(r.rootAt + 5, out[2].indexOf("▐"), `seed ${seed}: ROOT follows the divider`);
+			assert.equal(r.rootAt + 5, out[3].indexOf("▐"), `seed ${seed}: ROOT follows the divider`);
 			assert.equal(text(r.root).slice(1, 5), "ROOT");
 			assert.equal(text(r.badge).replace(/[▓▚▞░]/g, " "), { 12: " 12 AU ", 99: " 99 AU ", 0: " 00 AU ", null: "  ? AU " }[String(units)]);
 			assert.equal(r.lamp.bg, working ? "primary" : "surface");
-			assert.match(out[3], percent === null ? / \?\/272k / : new RegExp(` ${percent.toFixed(1).replace(".", "\\.")}%/272k `));
+			assert.match(out[4], percent === null ? / \?\/272k / : new RegExp(` ${percent.toFixed(1).replace(".", "\\.")}%/272k `));
 		}
 	}
 	// Panel re-strikes wait for a settled numeral.
@@ -861,7 +946,7 @@ test("live geometry and values during events: changed context, counts and Workin
 		const frame = { ...motionFrame(s, s.strike!.at + 50), pulse: null };
 		assert.ok(frame.numeral);
 		const noStrike = renderFooter(f, 120, theme, { ...frame, strike: undefined, ghosts: undefined });
-		assert.deepEqual(plain(renderFooter(f, 120, theme, frame)).map((line) => line.slice(94)), plain(noStrike).map((line) => line.slice(94)));
+		assert.deepEqual(plain(renderFooter(f, 120, theme, frame)).slice(3, 6).map((line) => line.slice(94)), plain(noStrike).slice(3, 6).map((line) => line.slice(94)));
 		break;
 	}
 });
@@ -927,9 +1012,9 @@ test("motion schedule wakes only for the next visible decoration step or due eve
 test("glitch is fill-only: never the readout, the fill edge, unlit track or unknown", () => {
 	for (const percent of [5, 41.8, 76.4, 93.3, 100, 0, null]) {
 		const f = session(percent), lit = percent ? Math.ceil(percent * 60 / 100) : 0;
-		const base = grid(renderFooter(f, 120, theme))[3].slice(11, 71);
+		const base = grid(renderFooter(f, 120, theme))[4].slice(11, 71);
 		for (let seed = 0; seed < 60; seed++) {
-			const gauge = grid(renderFooter(f, 120, theme, { ...SETTLED_FRAME, glitch: { level: 3, seed } }))[3].slice(11, 71);
+			const gauge = grid(renderFooter(f, 120, theme, { ...SETTLED_FRAME, glitch: { level: 3, seed } }))[4].slice(11, 71);
 			gauge.forEach((c, i) => {
 				if (c.ch === base[i].ch && c.bg === base[i].bg && c.fg === base[i].fg) return;
 				assert.ok(i >= 12 && i < lit - 1, `${percent} seed ${seed} cell ${i}`);

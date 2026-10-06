@@ -45,7 +45,7 @@ Use descriptive lower-case filenames and named exports for reusable domain/rende
 
 **Rule:** use explicit inputs/results and make side effects visible. **Example:** `inspectWorkspace(path, { signal })` performs bounded reads and returns a complete state union; `renderFooter(snapshot, width, theme, frame)` performs no I/O and receives decoration time as a frame instead of reading a clock. **Reason:** callers can distinguish failure and control cancellation. **Check:** tests exercise success, failure, cancellation, and stale completion.
 
-**Rule:** extract behavior only when semantics are genuinely shared. **Example:** terminal sanitization is centralized in `safeText`; active and main checkout formatting reuse the private `checkout` helper. Do not merge local Git and GitHub PR caches merely because both refresh. **Reason:** similar timing does not mean identical invalidation or failure rules. **Check:** identify callers and invariants before extraction; no speculative factory/interface/base class.
+**Rule:** extract behavior only when semantics are genuinely shared. **Example:** terminal sanitization is centralized in `safeText` across paths, Active Git details and other footer fields. Do not merge local Git and GitHub PR caches merely because both refresh. **Reason:** similar timing does not mean identical invalidation or failure rules. **Check:** identify callers and invariants before extraction; no speculative factory/interface/base class.
 
 Public compatibility currently consists of the package entry, tool name/schema/details, the `/footer-motion` command, and workspace exports used by the extension/tests. Change these deliberately with updated integration coverage and, when consequential, a decision record.
 
