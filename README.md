@@ -4,14 +4,14 @@ A Pi extension that replaces the default footer with an explicit view of where t
 
 It shows, in a framed Marathon-inspired “Acid / Black” instrument panel with numbered plates:
 
-- a **CMP** plate that always leads the frame title with the selected session branch's successful compaction count (`CMP×00`–`CMP×99`, `CMP×99+` above 99, `CMP×??` when unknown), followed by the GitHub repository and open-pull-request state when available;
-- fixed **Launch** and agent-reported **Active** paths as their parent/current directories, for example `Projects/pi-status-bar`;
-- Active Git details on an unnumbered row below its complete path: a grey `⑂` plate, white branch plate, and clean/modified/status-unavailable plate;
-- a graduated context gauge with 70%/90% thresholds and, at 100+ columns, a large percentage numeral;
+- a **CMP** plate that always leads the frame title with the selected session branch's successful compaction count (`CMP×00`–`CMP×99`, `CMP×99+` above 99, `CMP×??` when unknown), followed by the GitHub repository owner and open-pull-request state when available;
+- fixed **Launch** and agent-reported **Active** paths as their parent/current directories, for example `Projects/pi-status-bar`; when both are exactly the same path, Launch reads `= ACT` instead of repeating it;
+- Active Git details on an unnumbered row below its complete path: a grey `⑂` and branch name, then a clean/modified/status-unavailable plate;
+- a graduated context gauge with 70%/90% thresholds, an inline context-token readout such as `84k/200k` and, at 100+ columns, a large percentage numeral;
 - the model and thinking level, a white **⌑ PNYTL //** mode plate, plus statuses from other extensions (recognized Ponytail text is represented once by its plate);
 - a **ROOT** working lamp and an independent **AU (Active Units)** badge from the optional public pi-subagents fleet API.
 
-Full PR URLs and primary-checkout rows are omitted from the footer; validated PR URLs and primary-checkout inspection data are unchanged. Token totals, cache metrics, and cost are intentionally omitted. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
+Full PR URLs and primary-checkout rows are omitted from the footer; validated PR URLs and primary-checkout inspection data are unchanged. Cumulative token totals, cache metrics, and cost are intentionally omitted. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
 
 The native v9 frame has corners and a standalone calibration cross, without a continuous top rule or ruler ticks. Plates, context squares and ROOT/AU panels animate decoratively; readouts, counts and current digit shapes stay truthful. Run `/footer-motion off` to settle the animation for the current session, `/footer-motion on` to resume it, or `/footer-motion` to toggle. The choice is not saved.
 

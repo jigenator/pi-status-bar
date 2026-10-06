@@ -114,7 +114,7 @@ const TAG: Record<Tone, string> = { ok: "", warn: "▲ WARN", high: "▲ HIGH", 
 const GREY_PLATE: Style = { fg: "text", bg: "plate", bold: true };
 const LABEL = { ldr: "01 LDR", act: "02 ACT", ctx: "03 CTX", mdl: "04 MDL", ext: "05 EXT" } as const;
 
-const finitePercent = (percent: unknown) => typeof percent === "number" && Number.isFinite(percent) ? percent : undefined;
+const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const toneOf = (percent: number | undefined): Tone => percent === undefined ? "unknown" : percent > 90 ? "high" : percent > 70 ? "warn" : "ok";
 const levelOf = (percent: number | undefined) => percent === undefined || percent <= 0 ? 0 : percent > 90 ? 3 : percent > 70 ? 2 : 1;
 const knownCount = (count: unknown) => typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
@@ -127,15 +127,16 @@ const cmpStyle = (count: number | undefined): Style => ({
 	bold: true,
 });
 
-function compact(count: number): string {
-	return count >= 1_000_000 ? `${(count / 1_000_000).toFixed(1)}M` : count >= 1_000 ? `${(count / 1_000).toFixed(0)}k` : `${count}`;
+// `unit` selects the scale and precision, so tokens can share the window's (84k/200k, 0.1M/1.0M).
+function compact(count: number, unit = count): string {
+	return unit >= 1_000_000 ? `${(count / 1_000_000).toFixed(1)}M` : unit >= 1_000 ? `${(count / 1_000).toFixed(0)}k` : `${count}`;
 }
 // Context values shared by rendering and motion memory.
 function contextOf(snapshot: FooterSnapshot) {
 	const usage = snapshot.contextUsage;
-	const percent = finitePercent(usage?.percent);
+	const percent = finite(usage?.percent), tokens = finite(usage?.tokens);
 	const windowSize = [usage?.contextWindow, snapshot.model?.contextWindow].find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
-	return { percent, tone: toneOf(percent), windowText: windowSize ? compact(windowSize) : "" };
+	return { percent, tone: toneOf(percent), windowText: windowSize ? compact(windowSize) : "", tokensText: tokens === undefined ? "?" : compact(tokens, windowSize) };
 }
 const panelLabels = (percent: number | undefined, windowText: string) =>
 	[percent === undefined ? "" : "%", percent === undefined ? "UNKNOWN" : "USED", windowText ? `of ${windowText}` : ""];
@@ -719,9 +720,11 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const checkout = (info: CheckoutInfo, branchAt: number, gitAt: number) => {
 		const branch = info.branch ?? `detached${info.revision ? ` @${info.revision}` : ""}`;
 		const status = info.dirty === null ? chip("status unavailable", PLATE.unknown, gitAt) : info.dirty ? chip("modified", PLATE.warn, gitAt) : chip("clean", PLATE.ok, gitAt);
-		return chip("⑂", GREY_PLATE, branchAt) + gap() + chip(safeText(branch), { fg: "field", bg: "text", bold: true }, branchAt) + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
+		return paint("⑂", settleStyle({ fg: "secondary" }, branchAt)) + gap() + pathPaint(safeText(branch), { fg: "secondary" }, branchAt) + gap() + status + (info.error ? paint(` (${safeText(info.error)})`, { fg: "warn" }) : "");
 	};
 	const git = snapshot.workspace?.git;
+	// Exact stored paths, not their parent/current displays, which distinct paths can share.
+	const launchText = snapshot.launchPath === snapshot.activePath ? "= ACT" : displayPath(snapshot.launchPath, snapshot.homePath);
 	const active = pathPaint(displayPath(snapshot.activePath, snapshot.homePath), { bold: true }, BOOT_AT.active);
 	// Directory first: wrap the complete Active path before its unnumbered Git details.
 	let gitDetails: string | undefined;
@@ -729,14 +732,15 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	else if (git?.kind === "unknown") gitDetails = paint(`Git unavailable (${safeText(git.reason)})`, { fg: "warn" });
 	else if (!git) gitDetails = paint("Git pending", { fg: "secondary" });
 	const github = snapshot.workspace?.github;
-	let repository: string | undefined;
+	let title: string | undefined;
 	if (github?.kind === "repository") {
-		const pr = snapshot.pullRequest, name = safeText(github.name), settle = BOOT_AT.github + (name.split(sep).length - 1) * 2;
-		repository = pathPaint(name, { bold: true }, BOOT_AT.github);
-		if (pr.kind === "open") repository += paint(" · ", settleStyle({ fg: "secondary" }, settle)) + paint(`PR #${pr.number}`, settleStyle({ bold: true }, settle));
-		else if (pr.kind === "unavailable") repository += paint(" · ", { fg: "secondary" }) + paint(`PR unavailable (${safeText(pr.reason)})`, { fg: "warn" });
-	} else if (github?.kind === "unknown") repository = paint(`GitHub unavailable (${safeText(github.reason)})`, { fg: "warn" });
-	else if (!github) repository = paint("GitHub pending", { fg: "secondary" });
+		// Owner only: Active already shows the checkout directory, which usually repeats the repository name.
+		const pr = snapshot.pullRequest;
+		title = pathPaint(safeText(github.name.split("/")[0]), { bold: true }, BOOT_AT.github);
+		if (pr.kind === "open") title += paint(" · ", settleStyle({ fg: "secondary" }, BOOT_AT.github)) + paint(`PR #${pr.number}`, settleStyle({ bold: true }, BOOT_AT.github));
+		else if (pr.kind === "unavailable") title += paint(" · ", { fg: "secondary" }) + paint(`PR unavailable (${safeText(pr.reason)})`, { fg: "warn" });
+	} else if (github?.kind === "unknown") title = paint(`GitHub unavailable (${safeText(github.reason)})`, { fg: "warn" });
+	else if (!github) title = paint("GitHub pending", { fg: "secondary" });
 	// Word emphasis travels word by word; the thinking level latches acid last.
 	const word = (text: string, base: Style, w: number) => {
 		if (!inBoot) return paint(text, base);
@@ -762,8 +766,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		return fg + bg + restoreBase(safeText(status, true), fg, bg);
 	});
 
-	const { percent, tone, windowText } = contextOf(snapshot);
-	const readoutText = `${percent === undefined ? "?" : `${percent.toFixed(1)}%`}${windowText ? `/${windowText}` : ""}`;
+	const { percent, tone, windowText, tokensText } = contextOf(snapshot);
+	const readoutText = `${tokensText}${windowText ? `/${windowText}` : ""}`;
 	const tagText = TAG[tone];
 	const tagStyle: Style = frame.tagFlash ? { fg: "field", bg: tone === "unknown" ? "text" : FILL[tone], bold: true } : { fg: tone === "unknown" ? "secondary" : FILL[tone], bold: true };
 	const tag = tagText ? chip(tagText, tagStyle, BOOT_AT.tag) : "";
@@ -791,11 +795,11 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const add = (label: string, s: Style, value: string) => {
 			for (const line of wrap(paint(` ${label} `, s) + gap() + value, W)) lines.push(serialize(runPad(line, W)));
 		};
-		for (const line of wrap(paint(cmpText, cmp) + (repository ? gap() + repository : ""), W)) lines.push(serialize(runPad(line, W)));
+		for (const line of wrap(paint(cmpText, cmp) + (title ? gap() + title : ""), W)) lines.push(serialize(runPad(line, W)));
 		// The lamp is a solid glyph here so wrapping never drops it as blank.
 		const lampText = paint(lamp.ch === " " ? "█" : lamp.ch, lamp.ch === " " ? { fg: lamp.bg, bg: lamp.bg } : lamp);
 		for (const line of wrap(lampText + gap() + paint(" ROOT ", root[0]) + gap() + paint(badge.map((c) => c.ch).join(""), badgeStyle), W)) lines.push(serialize(runPad(line, W)));
-		add(LABEL.ldr, GREY_PLATE, paint(displayPath(snapshot.launchPath, snapshot.homePath), { fg: "secondary" }));
+		add(LABEL.ldr, GREY_PLATE, paint(launchText, { fg: "secondary" }));
 		add(LABEL.act, PLATE.ok, active);
 		if (gitDetails) for (const line of wrap(gitDetails, W)) lines.push(serialize(runPad(line, W)));
 		add(LABEL.ctx, PLATE[tone], chip(readoutText, READOUT_CHIP[tone]) + (tag ? gap() + tag : ""));
@@ -921,7 +925,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 
 	/* ---------- header: CMP plate, GitHub title, corners, standalone ┼ and the activity group ---------- */
 	const drawn = inBoot ? k * 8 : W;
-	const titleNatural = repository ? visibleWidth(repository) : 0;
+	const titleNatural = title ? visibleWidth(title) : 0;
 	type Placement = { x: number; cells: Cell[] };
 	const group = (withRail: boolean, x?: number, badgeAt?: number): Placement => {
 		const head = [lamp, cell(" "), ...root];
@@ -933,9 +937,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		return { x, cells: [...head, ...(withRail ? [cell(" "), ...rail] : []), ...blanks(fill), ...badge] };
 	};
 	let place: Placement, ownRow = false;
-	// The CMP plate sits at G; repository text starts on the content column of the rows below.
+	// The CMP plate sits at G; title text starts on the content column of the rows below.
 	const titleStart = G + P + 1;
-	const fits = (p: Placement) => p.x >= G + 1 && p.x - 1 >= (repository ? titleStart + titleNatural : G + P);
+	const fits = (p: Placement) => p.x >= G + 1 && p.x - 1 >= (title ? titleStart + titleNatural : G + P);
 	if (numeral) {
 		// ROOT's right edge meets the context divider; the badge's left background edge meets the captions.
 		const rootEnd = sideStart + 3, lab0 = sideStart + 5 + numeral.w, x = rootEnd - 8;
@@ -947,7 +951,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		place = candidates.find(fits) ?? (ownRow = true, candidates.find((p) => p.x >= G + 1) ?? candidates[1]);
 	}
 	const titleWidth = Math.max(1, (ownRow ? W - G - 1 : place.x - 1) - titleStart);
-	const titleLines = repository ? wrap(repository, titleWidth) : [];
+	const titleLines = title ? wrap(title, titleWidth) : [];
 	// Absolute placement on one row; untouched columns are ghostable field.
 	const placeRow = (items: { x: number; parts: Part[] }[]): Part[] => {
 		const row: Part[] = [];
@@ -988,7 +992,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 
 	const body: Part[][] = [];
 	plateRows.set("ldr", header.length);
-	body.push(...fieldRows(plate("ldr", GREY_PLATE, bootWipe(0)), pathPaint(displayPath(snapshot.launchPath, snapshot.homePath), { fg: "secondary" }, BOOT_AT.launch), FW));
+	body.push(...fieldRows(plate("ldr", GREY_PLATE, bootWipe(0)), pathPaint(launchText, { fg: "secondary" }, BOOT_AT.launch), FW));
 	const blockStart = header.length + body.length;
 	for (const key of ["act", "ctx"] as const) if (plateRows.has(key)) plateRows.set(key, plateRows.get(key)! + blockStart);
 	block.forEach((row, i) => body.push([...row, ...sideCells(i - numeralRow0)]));
