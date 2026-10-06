@@ -159,7 +159,8 @@ test("real host supplies home for display without changing absolute selection de
 	// Active starts at Launch (Pi's cwd), so no cwd line appears until a deliberate move.
 	assert.match(h.text(), /01 ACT +~\/launch /); assert.doesNotMatch(h.text(), /cwd|LDR/);
 	const result = await h.select(f.plain);
-	assert.match(h.text(), /01 ACT +~\/plain ü /); assert.match(h.text(), /\n +cwd ~\/launch /);
+	// Pi's cwd takes the spacer row directly above ACT.
+	assert.match(h.text(), /\n[┃ ] +cwd ~\/launch [ ┃]*\n +01 ACT +~\/plain ü /);
 	assert.equal(result.details.path, f.plain);
 	assert.equal(manager.getCwd(), f.launch);
 });
@@ -250,8 +251,8 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/);
 	await writeFile(join(f.second, ".slow-git"), "delay");
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
-	// The plain path is followed directly by the cwd line: no stale Git details in between.
-	const plainOnly = new RegExp(`01 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[ ┃]*\\n +cwd `);
+	// The plain path is followed directly by CTX: no stale Git details in between.
+	const plainOnly = new RegExp(`01 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} [^\\n⑂]*\\n +02 CTX `);
 	await until(() => plainOnly.test(h.text())); await sleep(700);
 	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /2\.1 MN|release|GitHub|Not a Git repository|No GitHub remote/);
 	assert.match(h.text(), / CMP×00 /, "CMP stays visible without repository data");
@@ -271,7 +272,7 @@ test("failed branch discovery displays Git and PR unavailable, then recovers", a
 	assert.equal(await f.count(f.ghLog), 0, "unknown branch must not start a PR lookup");
 	await rm(join(f.repo, ".broken-head"));
 	await h.runner.emit({ type: "tool_execution_end", toolCallId: "recovered", toolName: "bash", result: { content: [], details: undefined }, isError: false });
-	await until(() => /release {2}clean/.test(h.text()) && /CMP×00  fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
+	await until(() => /release {2}clean/.test(h.text()) && /CMP×00  ■ fixture\/status-bar/.test(h.text()) && !/PR unavailable/.test(h.text()));
 	// Named repository and known branch: the branch replaces the path on the ACT row.
 	assert.match(row(h.text(), "01 ACT"), /01 ACT {2}⑂ release {2}clean/); assert.doesNotMatch(h.text(), new RegExp(shown(f.repo)));
 	assert.ok(row(h.text(), "cwd ").includes(shown(f.launch)));
@@ -670,7 +671,7 @@ test("PNYTL observer and directory-first linked-worktree selection preserve both
 		assert.ok(lines[act].includes(shown(checkout)));
 		assert.doesNotMatch(lines[act], /feat\/footer-ponytail|clean|⑂/);
 		assert.match(lines[act + 1], /⑂ feat\/footer-ponytail {2}clean/);
-		assert.doesNotMatch(lines[act + 1], /01 ACT/); assert.ok(lines[act + 2].includes(`cwd ${shown(f.launch)}`));
+		assert.doesNotMatch(lines[act + 1], /01 ACT/); assert.ok(lines[act - 1].includes(`cwd ${shown(f.launch)}`));
 		assert.doesNotMatch(h.text(), /2\.1 MN|release|https:\/\/github\.com/);
 		assert.match(h.text(), /Other extension retained/);
 		if (expected === "UNK") assert.match(h.text(), /warning: Ponytail unavailable/);
