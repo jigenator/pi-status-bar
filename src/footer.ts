@@ -22,7 +22,7 @@ const activeTatsu = (snapshot: FooterSnapshot) => snapshot.tatsu && snapshot.tat
 const tatsuKey = (c: TatsuComponent) => `${c.state}/${c.commitsBehind ?? "?"}/${c.localChanges ?? "?"}`;
 const tatsuLook = (c: TatsuComponent): { shape: string; word: string; ink: Hue } => {
 	switch (c.state) {
-		case "current": return { shape: "●", word: "current", ink: "primary" };
+		case "current": return { shape: "•", word: "current", ink: "primary" };
 		case "behind": return { shape: "▲", word: `update${c.commitsBehind === undefined ? "" : ` ×${c.commitsBehind}`}${c.localChanges === true ? " ◆ local edits" : ""}`, ink: "warn" };
 		case "repair": return { shape: "▲", word: `repair${c.localChanges === true ? " ◆ local edits" : ""}`, ink: "warn" };
 		case "local_changes": return { shape: "◆", word: "local edits", ink: "warn" };
@@ -379,13 +379,13 @@ export const USAGE_BOOT_TICKS = Math.ceil(USAGE_ROW_CELLS / USAGE_SWEEP_CELLS_PE
 
 export const TATSU_CHECK_STEP_MS = 150;
 const TATSU_CHECK_FADE_INKS: readonly Hue[] = ["checkLow", "checkMidLow", "graphic", "checkMidHigh", "checkHigh", "checkMidHigh", "graphic", "checkMidLow"];
-export const TATSU_CHECK_GLYPHS = ["·", "•", "●", "•", "·"] as const;
+export const TATSU_CHECK_GLYPHS = ["·", "•", "•", "•", "·"] as const;
 export const TATSU_LATCH_TICKS = 3;
 export const TATSU_BEACON_PERIOD_MS = 4000;
 export const TATSU_BEACON_STEP_MS = 50;
 export const TATSU_BEACON_MS = 3 * TATSU_BEACON_STEP_MS;
 // Typical status draws in in ~0.7s; long counts/local-edits combinations get enough ticks too.
-const tatsuBootTicks = (snapshot: TatsuSnapshot) => Math.ceil((7 + snapshot.components.reduce((n, c) => n + 6 + tatsuLook(c).word.length, 0) + 3) / USAGE_SWEEP_CELLS_PER_TICK);
+const tatsuBootTicks = (snapshot: TatsuSnapshot) => Math.ceil((snapshot.components.reduce((n, c) => n + 7 + tatsuLook(c).word.length, 0) + 3) / USAGE_SWEEP_CELLS_PER_TICK);
 type TatsuBoot = { at: number; ticks: number };
 
 type StrikeKind = "heavy" | "void" | "flash" | "mid" | "light" | "worn";
@@ -1126,7 +1126,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const fg = foregroundAnsi(C[base.fg ?? "text"], mode) + (base.bold ? "\x1b[1m" : ""), bg = backgroundAnsi(C.field, mode);
 		if (key === "tatsu-status" && tatsu) {
 			const held = inBoot || frame.tatsuBoot !== undefined;
-			const styled = paint("tatsu", { fg: "secondary" }) + paint("  ") + tatsu.components.map((c) => {
+			const styled = tatsu.components.map((c) => {
 				const look = tatsuLook(c), latch = held ? undefined : frame.tatsuLatches?.[c.component];
 				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: "field", bg: look.ink, bold: true } : { fg: look.ink, bold: true };
 				const beacon = held || latch !== undefined ? undefined : frame.tatsuBeacon;
@@ -1134,7 +1134,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 				const shape = c.state === "checking" && !held ? TATSU_CHECK_GLYPHS[(frame.tatsuCheck ?? 0) % TATSU_CHECK_GLYPHS.length] : attention && beacon !== undefined && beacon < 2 ? "▴" : look.shape;
 				const shapeInk = attention && beacon !== undefined && beacon > 0 ? { ...ink, fg: "warnDim" as const } : ink;
 				const wordInk = c.state === "checking" && !held && frame.tatsuCheck !== undefined ? { ...ink, fg: TATSU_CHECK_FADE_INKS[frame.tatsuCheck % TATSU_CHECK_FADE_INKS.length] } : ink;
-				return paint(c.component === "tatsu-cli" ? "CLI" : "WKS", { fg: "secondary", bold: true }) + gap() + paint(shape, shapeInk) + paint(` ${look.word}`, wordInk);
+				return paint(c.component === "tatsu-cli" ? "TCLI" : "AWKS", { fg: "secondary", bold: true }) + gap() + paint(shape, shapeInk) + paint(` ${look.word}`, wordInk);
 			}).join(paint("   "));
 			// During the footer boot use EXT's existing treatment, not an independent draw-in.
 			return { structured: true, text: inBoot ? paint(stripTerminalSequences(styled), base) : styled, front: !inBoot && frame.tatsuBoot !== undefined ? (frame.tatsuBoot + 1) * USAGE_SWEEP_CELLS_PER_TICK : Infinity };
