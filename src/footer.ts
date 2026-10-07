@@ -440,9 +440,9 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 
 // The lamp blinks 500 ms acid / 300 ms dim; each visible unit mark shuttles on its own period.
 const lampOn = (pulse: number) => pulse % 16 < 10;
-// Ponytail's light blinks 100 ms on / 100 ms off: 5 a second, far faster than ROOT. One character cell is well
-// below WCAG's flash-area threshold, so this exceeds the three-a-second budget kept for the mode letters by choice.
-const lightOn = (pulse: number) => pulse % 4 < 2;
+// Ponytail's light toggles every 50 ms decoration tick: 10 blinks a second, the fastest the tick allows. One character
+// cell is well below WCAG's flash-area threshold, so this exceeds the three-a-second budget kept for the mode letters by choice.
+const lightOn = (pulse: number) => pulse % 2 === 0;
 const markSide = (pulse: number, q: number) => Math.floor((pulse + q * 3) / (4 + ((q * 2) % 5))) % 2;
 
 /** Milliseconds until the decoration can next change or an event is due. Call only while motion is on. */
