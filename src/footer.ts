@@ -20,7 +20,7 @@ export type TatsuComponent = { component: "tatsu-cli" | "agent-workspace"; state
 export type TatsuSnapshot = { phase: "inactive" | "checking" | "completed"; components: readonly TatsuComponent[] };
 const activeTatsu = (snapshot: FooterSnapshot) => snapshot.tatsu && snapshot.tatsu.phase !== "inactive" ? snapshot.tatsu : undefined;
 const tatsuKey = (c: TatsuComponent) => `${c.state}/${c.commitsBehind ?? "?"}/${c.localChanges ?? "?"}`;
-// A component's state half: shape and short code, black on the state colour (`ink`). Behind/repair append local edits.
+// A component's state: shape and short code, bold in the state colour (`ink`). Behind/repair append local edits.
 const tatsuLook = (c: TatsuComponent): { shape: string; code: string; ink: Hue } => {
 	const edit = c.localChanges === true ? " ◆ EDIT" : "";
 	switch (c.state) {
@@ -35,9 +35,9 @@ const tatsuLook = (c: TatsuComponent): { shape: string; code: string; ink: Hue }
 		case "inactive": return { shape: "·", code: "OFF", ink: "graphic" };
 	}
 };
-// One plate per component, ` TCLI ` then ` <shape> <code> ` (single-width glyphs), two field cells apart.
-const TATSU_GAP = 2;
-const tatsuWidth = (snapshot: TatsuSnapshot) => snapshot.components.reduce((n, c) => n + 10 + tatsuLook(c).code.length, 0) + TATSU_GAP * (snapshot.components.length - 1);
+// Plain text per component, `TCLI <shape> <code>` (single-width glyphs), three field cells apart.
+const TATSU_GAP = 3;
+const tatsuWidth = (snapshot: TatsuSnapshot) => snapshot.components.reduce((n, c) => n + 7 + tatsuLook(c).code.length, 0) + TATSU_GAP * (snapshot.components.length - 1);
 export type FooterSnapshot = {
 	homePath: string;
 	launchPath: string;
@@ -1141,9 +1141,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const settled = Math.max(0, front - USAGE_SWEEP_CELLS_PER_TICK - x);
 		return truncateToWidth(text, settled, "") + paint([...stripTerminalSequences(text)].slice(settled, Math.max(0, front - x)).join(""), LOCKED);
 	};
-	// Tatsu plates break only between components, so a plate never splits while it fits a line; one wider than its line
+	// Tatsu components break only between components, so one never splits while it fits a line; one wider than its line
 	// wraps like any other status. The first line holds `first` cells after any `lead` (the minimal layout's label).
-	const plateLines = (parts: string[], first: number, rest: number, lead: boolean) => {
+	const tatsuLines = (parts: string[], first: number, rest: number, lead: boolean) => {
 		const lines = [""];
 		let used = 0, cap = first;
 		for (const part of parts) {
@@ -1168,16 +1168,17 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 			const held = inBoot || frame.tatsuBoot !== undefined;
 			const parts = tatsu.components.map((c) => {
 				const look = tatsuLook(c), latch = held ? undefined : frame.tatsuLatches?.[c.component], checking = c.state === "checking" && !held;
-				// Checking fades only the state half's background; its text stays black.
-				const plateInk = checking && frame.tatsuCheck !== undefined ? TATSU_CHECK_FADE_INKS[frame.tatsuCheck % TATSU_CHECK_FADE_INKS.length] : look.ink;
-				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: look.ink, bg: "field", bold: true } : { fg: "field", bg: plateInk, bold: true };
+				// Checking fades only the code's colour; the label and grey shape stay put.
+				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: "field", bg: look.ink, bold: true } : { fg: look.ink, bold: true };
+				const codeInk: Style = checking && latch === undefined && frame.tatsuCheck !== undefined ? { ...ink, fg: TATSU_CHECK_FADE_INKS[frame.tatsuCheck % TATSU_CHECK_FADE_INKS.length] } : ink;
 				const beacon = held || latch !== undefined ? undefined : frame.tatsuBeacon;
 				const attention = c.state === "behind" || c.state === "repair";
 				const shape = checking ? TATSU_CHECK_GLYPHS[(frame.tatsuCheck ?? 0) % TATSU_CHECK_GLYPHS.length] : attention && beacon !== undefined && beacon < 2 ? "▴" : look.shape;
 				const shapeInk = attention && beacon !== undefined && beacon > 0 ? { ...ink, fg: "warnDim" as const } : ink;
-				const plate = paint(` ${c.component === "tatsu-cli" ? "TCLI" : "AWKS"} `, { fg: "secondary", bg: "surface", bold: true }) + paint(" ", ink) + paint(shape, shapeInk) + paint(` ${look.code} `, ink);
+				// The dim label leaves the coloured state to carry the reading.
+				const part = paint(c.component === "tatsu-cli" ? "TCLI" : "AWKS", { fg: "graphic" }) + paint(" ") + paint(shape, shapeInk) + paint(" ", ink) + paint(look.code, codeInk);
 				// During the footer boot use EXT's existing treatment, not an independent draw-in.
-				return inBoot ? paint(stripTerminalSequences(plate), base) : plate;
+				return inBoot ? paint(stripTerminalSequences(part), base) : part;
 			});
 			return { parts, text: "", front: !inBoot && frame.tatsuBoot !== undefined ? (frame.tatsuBoot + 1) * USAGE_SWEEP_CELLS_PER_TICK : Infinity };
 		}
@@ -1349,7 +1350,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 				for (const line of wrap(label, W)) lines.push(serialize(runPad(line, W)));
 				label = "";
 			}
-			const statusLines = status.parts ? plateLines(status.parts, label ? W - 9 : W, W, !!label).map((line, j) => (j === 0 ? label + line : line)) : wrap(label + status.text, W);
+			const statusLines = status.parts ? tatsuLines(status.parts, label ? W - 9 : W, W, !!label).map((line, j) => (j === 0 ? label + line : line)) : wrap(label + status.text, W);
 			statusLines.forEach((line, j) => {
 				const prefix = label && j === 0 ? Math.min(9, W) : 0;
 				const drawn = status.front === Infinity ? line : sliceByColumn(line, 0, prefix) + drawInText(sliceByColumn(line, prefix, W), 0, status.front);
@@ -1566,7 +1567,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
 		if (!status.parts) { body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status.text, FW)); return; }
-		plateLines(status.parts, FW, FW, false).forEach((line, j) => {
+		tatsuLines(status.parts, FW, FW, false).forEach((line, j) => {
 			body.push([...(i === 0 && j === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : blanks(P)), ...blanks(1), ...runPad(drawInText(line, 0, status.front), FW, "field", false)]);
 		});
 	});

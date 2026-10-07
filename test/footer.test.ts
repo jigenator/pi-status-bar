@@ -2222,7 +2222,7 @@ test("USG fill-in when a provider's data first arrives: per cell grey, white for
 	assert.deepEqual(startMotion(after, 9000, 5, false).usageFill, {});
 });
 
-/* Public Tatsu v1 classifications, rendered as one sorted EXT entry of two-coloured plates. */
+/* Public Tatsu v1 classifications, rendered as one sorted EXT entry of plain text: a dim label, then a coloured state. */
 const tatsuFixture = (cli: string = "current", wks: string = "current", options: object = {}): FooterSnapshot => ({
 	...session(), statuses: new Map(), tatsu: { phase: cli === "checking" && wks === "checking" ? "checking" : "completed", components: [
 		{ component: "tatsu-cli", state: cli, ...options }, { component: "agent-workspace", state: wks, ...options },
@@ -2233,60 +2233,56 @@ const tatsuCells = (f: FooterSnapshot, frame?: FooterFrame) => {
 	return cellsOf(lines[at]).slice(11).slice(0, 85);
 };
 const tatsuPlain = (f: FooterSnapshot, frame?: FooterFrame) => text(tatsuCells(f, frame)).trimEnd();
-// Plain text of one plate: ` TCLI ` label half, then the state half.
-const tatsuPlate = (label: string, half: string) => ` ${label} ${half}`;
-// Cell ranges of the two plates: label half, state half, then the two-cell separator before the second plate.
-const tatsuSpans = (cliHalf: number, wksHalf: number) => {
-	const b = 6 + cliHalf + 2;
-	return { cliLabel: [0, 6], cliState: [6, 6 + cliHalf], gap: [6 + cliHalf, b], wksLabel: [b, b + 6], wksState: [b + 6, b + 6 + wksHalf] } as const;
+// Cell ranges of `TCLI <shape> <code>   AWKS <shape> <code>`: label, state (shape, space, code), then the three-cell gap.
+const tatsuSpans = (cliCode: number, wksCode: number) => {
+	const b = 7 + cliCode + 3;
+	return { cliLabel: [0, 4], cliState: [5, 7 + cliCode], gap: [7 + cliCode, b], wksLabel: [b, b + 4], wksState: [b + 5, b + 7 + wksCode] } as const;
 };
 const span = (cells: TestCell[], [from, to]: readonly [number, number]) => cells.slice(from, to);
-const labelHalf = (cells: TestCell[]) => cells.length === 6 && cells.every((c) => c.fg === "secondary" && c.bg === "surface" && c.bold);
-const stateHalf = (cells: TestCell[], bg: string, fg = "field") => cells.length > 0 && cells.every((c) => c.fg === fg && c.bg === bg && c.bold);
+const labelText = (cells: TestCell[]) => cells.length === 4 && cells.every((c) => c.fg === "graphic" && !c.bold && c.bg === "field");
+const stateText = (cells: TestCell[], fg: string, bg = "field") => cells.length > 0 && cells.every((c) => c.fg === fg && c.bg === bg && c.bold);
 
-test("Tatsu: every state's plate halves, codes, colours and contrast; two-cell separator; glyphs are single-width", () => {
+test("Tatsu: every state's dim label, coloured shape and code; three-cell separator; glyphs are single-width", () => {
 	for (const glyph of "▲◆✕·•▴×") assert.equal(visibleWidth(glyph), 1, glyph);
-	for (const [state, options, half, ink] of [
-		["current", {}, " • OK ", "primary"],
-		["behind", {}, " ▲ UP ", "warn"], ["behind", { commitsBehind: 1 }, " ▲ UP×1 ", "warn"],
-		["behind", { commitsBehind: 0 }, " ▲ UP×0 ", "warn"],
-		["behind", { commitsBehind: 17, localChanges: true }, " ▲ UP×17 ◆ EDIT ", "warn"],
-		["behind", { localChanges: true }, " ▲ UP ◆ EDIT ", "warn"],
-		["behind", { localChanges: false }, " ▲ UP ", "warn"],
-		["repair", {}, " ▲ FIX ", "warn"], ["repair", { localChanges: true }, " ▲ FIX ◆ EDIT ", "warn"],
-		["local_changes", {}, " ◆ EDIT ", "warn"], ["missing", {}, " ✕ MISS ", "high"],
-		["not_runnable", {}, " ✕ NRUN ", "high"], ["unavailable", {}, " ✕ UNAV ", "high"],
-		["checking", {}, " · CHK ", "graphic"], ["inactive", {}, " · OFF ", "graphic"],
+	for (const [state, options, expected, ink] of [
+		["current", {}, "• OK", "primary"],
+		["behind", {}, "▲ UP", "warn"], ["behind", { commitsBehind: 1 }, "▲ UP×1", "warn"],
+		["behind", { commitsBehind: 0 }, "▲ UP×0", "warn"],
+		["behind", { commitsBehind: 17, localChanges: true }, "▲ UP×17 ◆ EDIT", "warn"],
+		["behind", { localChanges: true }, "▲ UP ◆ EDIT", "warn"],
+		["behind", { localChanges: false }, "▲ UP", "warn"],
+		["repair", {}, "▲ FIX", "warn"], ["repair", { localChanges: true }, "▲ FIX ◆ EDIT", "warn"],
+		["local_changes", {}, "◆ EDIT", "warn"], ["missing", {}, "✕ MISS", "high"],
+		["not_runnable", {}, "✕ NRUN", "high"], ["unavailable", {}, "✕ UNAV", "high"],
+		["checking", {}, "· CHK", "graphic"], ["inactive", {}, "· OFF", "graphic"],
 	] as const) {
-		const f = tatsuFixture(state, state, options), cells = tatsuCells(f), at = tatsuSpans(half.length, half.length);
-		assert.equal(tatsuPlain(f), `${tatsuPlate("TCLI", half)}  ${tatsuPlate("AWKS", half)}`.trimEnd());
-		assert.ok(labelHalf(span(cells, at.cliLabel)) && labelHalf(span(cells, at.wksLabel)), "label halves start at the content column");
-		assert.ok(stateHalf(span(cells, at.cliState), ink) && stateHalf(span(cells, at.wksState), ink), `${state} state halves are black on ${ink}`);
-		assert.ok(span(cells, at.gap).every((c) => c.ch === " " && c.bg === "field"), "two field-black cells separate the plates");
+		const f = tatsuFixture(state, state, options), cells = tatsuCells(f), code = expected.length - 2, at = tatsuSpans(code, code);
+		assert.equal(tatsuPlain(f), `TCLI ${expected}   AWKS ${expected}`);
+		assert.ok(labelText(span(cells, at.cliLabel)) && labelText(span(cells, at.wksLabel)), "dim labels start at the content column");
+		assert.ok(stateText(span(cells, at.cliState), ink) && stateText(span(cells, at.wksState), ink), `${state} is bold ${ink}`);
+		assert.ok(span(cells, at.gap).every((c) => c.ch === " " && c.bg === "field"), "three field cells separate the components");
 		assert.ok(cells.slice(at.wksState[1]).every((c) => c.ch === " " && c.bg === "field"), "nothing after the entry");
-		assert.ok(contrast("field", ink) >= 4.3, `${ink} contrast`);
 	}
-	// An inactive component inside an active snapshot keeps its own grey plate beside a real result.
-	const mixed = tatsuFixture("current", "inactive"), cells = tatsuCells(mixed), at = tatsuSpans(6, 7);
-	assert.equal(tatsuPlain(mixed), " TCLI  • OK    AWKS  · OFF");
-	assert.ok(stateHalf(span(cells, at.cliState), "primary") && stateHalf(span(cells, at.wksState), "graphic"));
-	assert.ok(contrast("secondary", "surface") >= 4.5);
+	// An inactive component inside an active snapshot keeps its own grey state beside a real result.
+	const mixed = tatsuFixture("current", "inactive"), cells = tatsuCells(mixed), at = tatsuSpans(2, 3);
+	assert.equal(tatsuPlain(mixed), "TCLI • OK   AWKS · OFF");
+	assert.ok(stateText(span(cells, at.cliState), "primary") && stateText(span(cells, at.wksState), "graphic"));
 });
 
-test("Tatsu: sorted placement, raw inactive fallback, breaks between plates, width bounds 1–280 settled and one frame per decoration", () => {
+test("Tatsu: sorted placement, raw inactive fallback, breaks between components, width bounds 1–280 settled and one frame per decoration", () => {
 	const f = tatsuFixture("repair", "unavailable", { localChanges: true });
 	f.statuses = new Map([["z-status", "last"], ["tatsu-status", "raw fallback"], ["a-status", "first"]]);
 	const lines = rows(f), first = lines.findIndex((line) => line.includes("first")), segment = lines.findIndex((line) => line.includes("TCLI")), last = lines.findIndex((line) => line.includes("last"));
 	assert.ok(first < segment && segment < last); assert.match(lines[first], /05 EXT/); assert.doesNotMatch(lines[segment], /05 EXT|raw fallback/);
 	const inactive = { ...f, tatsu: { ...f.tatsu!, phase: "inactive" as const } };
 	assert.match(rows(inactive).join("\n"), /raw fallback/); assert.doesNotMatch(rows(inactive).join("\n"), /TCLI/);
-	// Plates break only between components: 48 framed columns fit both, 30 minimal columns put each on its own line.
-	assert.ok(rows(f, 48).some((line) => line.includes(" TCLI  ▲ FIX ◆ EDIT    AWKS  ✕ UNAV ")));
+	// Components break only between each other: 48 framed columns fit both, 30 minimal columns put each on its own line.
+	assert.ok(rows(f, 48).some((line) => line.includes("TCLI ▲ FIX ◆ EDIT   AWKS ✕ UNAV")));
 	const narrow = rows(f, 30), cli = narrow.findIndex((line) => line.includes("TCLI"));
-	assert.equal(narrow[cli].trimEnd(), " TCLI  ▲ FIX ◆ EDIT"); assert.equal(narrow[cli + 1].trimEnd(), " AWKS  ✕ UNAV");
-	// Alone in EXT, the first plate sits beside the label when it fits.
+	assert.equal(narrow[cli].trimEnd(), "TCLI ▲ FIX ◆ EDIT"); assert.equal(narrow[cli + 1].trimEnd(), "AWKS ✕ UNAV");
+	// Alone in EXT, the first component sits beside the label when it fits.
 	const alone = rows(tatsuFixture("behind", "current", { commitsBehind: 1 }), 30), label = alone.findIndex((line) => line.includes("05 EXT"));
-	assert.equal(alone[label].trimEnd(), " 05 EXT   TCLI  ▲ UP×1"); assert.equal(alone[label + 1].trimEnd(), " AWKS  • OK");
+	assert.equal(alone[label].trimEnd(), " 05 EXT  TCLI ▲ UP×1"); assert.equal(alone[label + 1].trimEnd(), "AWKS • OK");
 	const frames: FooterFrame[] = [SETTLED_FRAME, { ...SETTLED_FRAME, tatsuBoot: 2 }, { ...SETTLED_FRAME, tatsuCheck: 4 }, { ...SETTLED_FRAME, tatsuLatches: { "tatsu-cli": 1 } }, { ...SETTLED_FRAME, tatsuBeacon: 1 }];
 	for (const f of [tatsuFixture("behind", "repair", { commitsBehind: Number.MAX_SAFE_INTEGER, localChanges: true }), tatsuFixture("checking", "checking"), tatsuFixture("missing", "not_runnable"), tatsuFixture("inactive", "local_changes")]) {
 		for (const frame of frames) for (let width = 1; width <= 280; width++) {
@@ -2297,18 +2293,18 @@ test("Tatsu: sorted placement, raw inactive fallback, breaks between plates, wid
 	}
 });
 
-test("Tatsu: draw-in reuses USG's three-cell LOCKED front over the plates; appearance/reappearance, footer boot and resume", () => {
+test("Tatsu: draw-in reuses USG's three-cell LOCKED front; appearance/reappearance, footer boot and resume", () => {
 	const absent = { ...tatsuFixture(), tatsu: undefined }, f = tatsuFixture();
 	let state = startMotion(absent, 0, 14, false);
 	state = advanceMotion(state, f, 2000);
-	const natural = 2 * tatsuPlate("TCLI", " • OK ").length + 2, settledCells = tatsuCells(f), settled = text(settledCells).slice(0, natural);
-	assert.equal(state.tatsuBoot?.ticks, Math.ceil(natural / 3), "the front reaches the last plate cell on the final tick");
+	const natural = 2 * "TCLI • OK".length + 3, settledCells = tatsuCells(f), settled = text(settledCells).slice(0, natural);
+	assert.equal(state.tatsuBoot?.ticks, Math.ceil(natural / 3), "the front reaches the last cell on the final tick");
 	for (let k = 0; k < state.tatsuBoot!.ticks; k++) {
 		const frame = motionFrame(state, 2000 + k * 50), cells = tatsuCells(f, frame), front = (k + 1) * 3;
 		assert.equal(text(cells).slice(0, Math.min(front, natural)), settled.slice(0, front));
 		assert.ok(cells.slice(front).every((c) => c.ch === " " && c.bg === "field"), "cells ahead of the front are blank field");
 		assert.ok(cells.slice(Math.max(0, front - 3), Math.min(front, natural)).every((c) => c.fg === "field" && c.bg === "primary" && c.bold));
-		assert.deepEqual(cells.slice(0, Math.max(0, front - 3)), settledCells.slice(0, Math.max(0, front - 3)), "cells behind the front are settled plates");
+		assert.deepEqual(cells.slice(0, Math.max(0, front - 3)), settledCells.slice(0, Math.max(0, front - 3)), "cells behind the front are settled");
 	}
 	state = advanceMotion(state, f, 4000); assert.equal(motionFrame(state, 4000).tatsuBoot, undefined);
 	assert.deepEqual(tatsuCells(f, motionFrame(state, 4000)), settledCells);
@@ -2320,40 +2316,42 @@ test("Tatsu: draw-in reuses USG's three-cell LOCKED front over the plates; appea
 	const boot = advanceMotion(startMotion(absent, 0, 14, true), f, 100), booting = tatsuCells(f, motionFrame(boot, 100));
 	assert.equal(motionFrame(boot, 100).tatsuBoot, undefined);
 	assert.equal(text(booting).trimEnd(), tatsuPlain(f), "EXT footer boot uses existing style treatment, not blanks");
-	assert.ok(booting.every((c) => c.bg === "field"), "footer boot restyles the plates as EXT text");
 });
 
-test("Tatsu: checking glyph cadence and gentle eight-step background fade share epoch and scheduler; off is steady", () => {
-	const f = tatsuFixture("checking", "checking"), epoch = 123, state = startMotion(f, epoch, 2, false), at = tatsuSpans(7, 7);
+test("Tatsu: checking glyph cadence and gentle eight-step code fade share epoch and scheduler; off is steady", () => {
+	const f = tatsuFixture("checking", "checking"), epoch = 123, state = startMotion(f, epoch, 2, false), at = tatsuSpans(3, 3);
 	const shapes = ["·", "•", "•", "•", "·"], levels = footer.TATSU_CHECK_FADE_LEVELS;
 	assert.deepEqual([...levels], ["#717171", "#7b7b7b", "#868686", "#919191", "#9c9c9c", "#919191", "#868686", "#7b7b7b"]);
 	for (let step = 0; step <= 16; step++) {
 		for (const offset of [0, 149]) {
 			const now = epoch + step * 150 + offset, frame = motionFrame(state, now), cells = tatsuCells(f, frame), shape = shapes[step % 5];
-			assert.equal(tatsuPlain(f, frame), `${tatsuPlate("TCLI", ` ${shape} CHK `)}  ${tatsuPlate("AWKS", ` ${shape} CHK `)}`.trimEnd());
+			assert.equal(tatsuPlain(f, frame), `TCLI ${shape} CHK   AWKS ${shape} CHK`);
 			const level = PALETTE[levels[step % 8]];
-			assert.ok(stateHalf(span(cells, at.cliState), level) && stateHalf(span(cells, at.wksState), level), `step ${step}: both state halves on ${level}, black text`);
-			assert.ok(labelHalf(span(cells, at.cliLabel)) && labelHalf(span(cells, at.wksLabel)));
+			for (const [from, to] of [at.cliState, at.wksState]) {
+				assert.ok(stateText(cells.slice(from, from + 2), "graphic"), `step ${step}: the shape stays graphic grey`);
+				assert.ok(stateText(cells.slice(from + 2, to), level), `step ${step}: both codes on ${level}, in phase`);
+			}
+			assert.ok(labelText(span(cells, at.cliLabel)) && labelText(span(cells, at.wksLabel)));
 			assert.ok(nextMotionDelay(state, now) <= 150 - offset);
 		}
 	}
 	for (let i = 1; i < levels.length; i++) assert.ok(contrast("field", PALETTE[levels[i]]) > contrast("field", "graphic"), "the fade only lightens");
 	const off = tatsuCells(f);
-	assert.equal(text(off).trimEnd(), " TCLI  · CHK    AWKS  · CHK");
-	assert.ok(stateHalf(span(off, at.cliState), "graphic") && stateHalf(span(off, at.wksState), "graphic"));
+	assert.equal(text(off).trimEnd(), "TCLI · CHK   AWKS · CHK");
+	assert.ok(stateText(span(off, at.cliState), "graphic") && stateText(span(off, at.wksState), "graphic"));
 });
 
-test("Tatsu: completed-result latches the state half only, no first/unchanged/checking/inactive replay", () => {
-	const current = tatsuFixture(), changed = tatsuFixture("behind", "current", { commitsBehind: 1 }), at = tatsuSpans(8, 6);
+test("Tatsu: completed-result latches the state only, no first/unchanged/checking/inactive replay", () => {
+	const current = tatsuFixture(), changed = tatsuFixture("behind", "current", { commitsBehind: 1 }), at = tatsuSpans(4, 2);
 	let state = startMotion(current, 0, 2, false);
 	state = advanceMotion(state, changed, 1000);
 	assert.equal(state.tatsuLatches["tatsu-cli"], 1000);
 	// Options apply to both fixture components: the count is part of each component's comparison key.
-	for (const [elapsed, bg, fg] of [[0, "primary", "field"], [50, "field", "warn"], [100, "field", "warn"], [150, "warn", "field"]] as const) {
+	for (const [elapsed, fg, bg] of [[0, "field", "primary"], [50, "field", "warn"], [100, "field", "warn"], [150, "warn", "field"]] as const) {
 		const cells = tatsuCells(changed, motionFrame(state, 1000 + elapsed));
-		assert.equal(tatsuPlain(changed, motionFrame(state, 1000 + elapsed)), " TCLI  ▲ UP×1    AWKS  • OK");
-		assert.ok(stateHalf(span(cells, at.cliState), bg, fg), `latch ${elapsed} ms`);
-		assert.ok(labelHalf(span(cells, at.cliLabel)), "the label half never latches");
+		assert.equal(tatsuPlain(changed, motionFrame(state, 1000 + elapsed)), "TCLI ▲ UP×1   AWKS • OK");
+		assert.ok(stateText(span(cells, at.cliState), fg, bg), `latch ${elapsed} ms`);
+		assert.ok(labelText(span(cells, at.cliLabel)), "the label never latches");
 	}
 	state = advanceMotion(state, changed, 1200);
 	state = advanceMotion(state, tatsuFixture("checking", "checking"), 1300);
@@ -2370,14 +2368,13 @@ test("Tatsu: completed-result latches the state half only, no first/unchanged/ch
 });
 
 test("Tatsu: attention beacon changes only the ▲ cell at most once per four seconds, code/count unchanged; ambient excluded", () => {
-	const f = tatsuFixture("behind", "repair", { commitsBehind: 1 }), epoch = 100, state = startMotion(f, epoch, 2, false), at = tatsuSpans(8, 7);
-	for (const [elapsed, shape, ink] of [[0, "▲", "field"], [3849, "▲", "field"], [3850, "▴", "field"], [3900, "▴", "warnDim"], [3950, "▲", "warnDim"], [4000, "▲", "field"], [7850, "▴", "field"]] as const) {
+	const f = tatsuFixture("behind", "repair", { commitsBehind: 1 }), epoch = 100, state = startMotion(f, epoch, 2, false), at = tatsuSpans(4, 3);
+	for (const [elapsed, shape, ink] of [[0, "▲", "warn"], [3849, "▲", "warn"], [3850, "▴", "warn"], [3900, "▴", "warnDim"], [3950, "▲", "warnDim"], [4000, "▲", "warn"], [7850, "▴", "warn"]] as const) {
 		const frame = motionFrame(state, epoch + elapsed), cells = tatsuCells(f, frame);
-		assert.equal(tatsuPlain(f, frame), ` TCLI  ${shape} UP×1    AWKS  ${shape} FIX`);
+		assert.equal(tatsuPlain(f, frame), `TCLI ${shape} UP×1   AWKS ${shape} FIX`);
 		for (const [from, to] of [at.cliState, at.wksState]) {
-			const half = cells.slice(from, to);
-			assert.equal(half[1].fg, ink); assert.equal(half[1].bg, "warn");
-			assert.ok(stateHalf([half[0], ...half.slice(2)], "warn"), "code and padding never change");
+			assert.equal(cells[from].fg, ink); assert.equal(cells[from].bg, "field");
+			assert.ok(stateText(cells.slice(from + 1, to), "warn"), "code and count never change");
 		}
 	}
 	let onsets = 0, previous = false;
@@ -2386,7 +2383,7 @@ test("Tatsu: attention beacon changes only the ▲ cell at most once per four se
 		if (active && !previous) onsets++; previous = active;
 	}
 	assert.equal(onsets, 3);
-	assert.equal(tatsuPlain(f), " TCLI  ▲ UP×1    AWKS  ▲ FIX");
+	assert.equal(tatsuPlain(f), "TCLI ▲ UP×1   AWKS ▲ FIX");
 	const ghost: FooterFrame = { ...SETTLED_FRAME, ghosts: { k: 0, items: [{ fam: "ghost", start: 0, at: { row: "ext", col: 8, colFrom: "plate" }, frames: [{ ch: "?", fg: "high" }] }] } };
 	assert.deepEqual(tatsuCells(f, ghost), tatsuCells(f));
 });
