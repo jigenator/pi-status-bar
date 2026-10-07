@@ -57,6 +57,8 @@ Public compatibility currently consists of the package entry, tool name/schema/d
 
 **Rule:** Ponytail status integration consumes only verified, bounded text from key `ponytail`; all other keys and unrecognized Ponytail warnings remain visible. OFF requires an observed explicit clear, never map absence. The narrow public `setStatus` observer must forward original behavior, detach reversibly without overwriting foreign wrappers, and not stack across footer replacements. **Check:** matching real-host status/lifecycle tests in `test/extension.test.ts`; activation and version assumptions in [architecture](architecture.md#ponytail-status-integration).
 
+**Rule:** Tatsu integration consumes only public v1 events and a validated minimal snapshot; no provider imports, formatter or polling. Only valid active data replaces raw `tatsu-status` in EXT; absent/invalid/inactive data preserve fallback text. Subscribe before synchronous discovery and dispose both listeners with session/component/UI ownership guards. **Check:** Tatsu real-loader/event-bus and renderer tests; contract in [architecture](architecture.md#tatsu-status-integration).
+
 Use TypeBox only at the Pi tool schema boundary. Do not serialize hidden credentials or raw command stderr into results.
 
 ## Errors and diagnostics

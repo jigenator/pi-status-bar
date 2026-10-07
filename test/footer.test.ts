@@ -2113,3 +2113,144 @@ test("USG fill-in when a provider's data first arrives: per cell grey, white for
 	assert.deepEqual(grid(renderFooter(after, 100, theme, SETTLED_FRAME)).slice(SQUARES, TEXT + 1), settled.slice(SQUARES, TEXT + 1));
 	assert.deepEqual(startMotion(after, 9000, 5, false).usageFill, {});
 });
+
+/* Public Tatsu v1 classifications, rendered as one sorted EXT entry. */
+const tatsuFixture = (cli: string = "current", wks: string = "current", options: object = {}): FooterSnapshot => ({
+	...session(), statuses: new Map(), tatsu: { phase: cli === "checking" && wks === "checking" ? "checking" : "completed", components: [
+		{ component: "tatsu-cli", state: cli, ...options }, { component: "agent-workspace", state: wks, ...options },
+	] } as FooterSnapshot["tatsu"],
+});
+const tatsuCells = (f: FooterSnapshot, frame?: FooterFrame) => {
+	const lines = renderFooter(f, 100, theme, frame), at = lines.findIndex((line: string) => stripTerminalSequences(line).includes("05 EXT"));
+	return cellsOf(lines[at]).slice(11).slice(0, 85);
+};
+const tatsuPlain = (f: FooterSnapshot, frame?: FooterFrame) => text(tatsuCells(f, frame)).trimEnd();
+
+test("Tatsu: every shape/word/colour, optional counts and local edits; glyphs are single-width", () => {
+	for (const glyph of "●▲◆✕·•▴") assert.equal(visibleWidth(glyph), 1, glyph);
+	for (const [state, options, expected, ink] of [
+		["current", {}, "● current", "primary"],
+		["behind", {}, "▲ update", "warn"], ["behind", { commitsBehind: 1 }, "▲ update ×1", "warn"],
+		["behind", { commitsBehind: 0 }, "▲ update ×0", "warn"],
+		["behind", { commitsBehind: 17, localChanges: true }, "▲ update ×17 ◆ local edits", "warn"],
+		["behind", { localChanges: true }, "▲ update ◆ local edits", "warn"],
+		["behind", { localChanges: false }, "▲ update", "warn"],
+		["repair", {}, "▲ repair", "warn"], ["repair", { localChanges: true }, "▲ repair ◆ local edits", "warn"],
+		["local_changes", {}, "◆ local edits", "warn"], ["missing", {}, "✕ not installed", "high"],
+		["not_runnable", {}, "✕ not runnable", "high"], ["unavailable", {}, "✕ unavailable", "high"],
+		["checking", {}, "· checking", "graphic"], ["inactive", {}, "· inactive", "graphic"],
+	] as const) {
+		const f = tatsuFixture(state, state, options), cells = tatsuCells(f);
+		assert.equal(text(cells).trimEnd(), `tatsu  CLI ${expected}   WKS ${expected}`);
+		assert.ok(cells.slice(0, 5).every((c) => c.fg === "secondary" && !c.bold));
+		assert.ok(cells.slice(7, 10).every((c) => c.fg === "secondary" && c.bold));
+		assert.ok(cells.slice(11, 11 + expected.length).filter((c) => c.ch !== " ").every((c) => c.fg === ink && c.bold));
+	}
+});
+
+test("Tatsu: sorted placement, raw inactive fallback and width bounds 1–280, settled and one frame per decoration", () => {
+	const f = tatsuFixture("repair", "unavailable", { localChanges: true });
+	f.statuses = new Map([["z-status", "last"], ["tatsu-status", "raw fallback"], ["a-status", "first"]]);
+	const lines = rows(f), first = lines.findIndex((line) => line.includes("first")), segment = lines.findIndex((line) => line.includes("tatsu  CLI")), last = lines.findIndex((line) => line.includes("last"));
+	assert.ok(first < segment && segment < last); assert.match(lines[first], /05 EXT/); assert.doesNotMatch(lines[segment], /05 EXT|raw fallback/);
+	const inactive = { ...f, tatsu: { ...f.tatsu!, phase: "inactive" as const } };
+	assert.match(rows(inactive).join("\n"), /raw fallback/); assert.doesNotMatch(rows(inactive).join("\n"), /tatsu  CLI/);
+	const frames: FooterFrame[] = [SETTLED_FRAME, { ...SETTLED_FRAME, tatsuBoot: 2 }, { ...SETTLED_FRAME, tatsuCheck: 4 }, { ...SETTLED_FRAME, tatsuLatches: { "tatsu-cli": 1 } }, { ...SETTLED_FRAME, tatsuBeacon: 1 }];
+	for (const f of [tatsuFixture("behind", "repair", { commitsBehind: Number.MAX_SAFE_INTEGER, localChanges: true }), tatsuFixture("checking", "checking"), tatsuFixture("missing", "not_runnable"), tatsuFixture("inactive", "local_changes")]) {
+		for (const frame of frames) for (let width = 1; width <= 280; width++) {
+			const lines = renderFooter(f, width, theme, frame);
+			assert.ok(lines.length > 0);
+			assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `Tatsu width ${width}`);
+		}
+	}
+});
+
+test("Tatsu: draw-in reuses USG's three-cell LOCKED front; appearance/reappearance, footer boot and resume", () => {
+	const absent = { ...tatsuFixture(), tatsu: undefined }, f = tatsuFixture();
+	let state = startMotion(absent, 0, 14, false);
+	state = advanceMotion(state, f, 2000);
+	assert.ok(state.tatsuBoot);
+	const settled = tatsuPlain(f), natural = settled.length;
+	for (let k = 0; k < Math.ceil(natural / 3); k++) {
+		const frame = motionFrame(state, 2000 + k * 50), cells = tatsuCells(f, frame), front = (k + 1) * 3;
+		assert.equal(text(cells).slice(0, front), settled.slice(0, front));
+		assert.equal(text(cells).slice(front).trim(), "");
+		assert.ok(cells.slice(Math.max(0, front - 3), Math.min(front, natural)).every((c) => c.fg === "field" && c.bg === "primary" && c.bold));
+	}
+	state = advanceMotion(state, f, 4000); assert.equal(motionFrame(state, 4000).tatsuBoot, undefined);
+	assert.equal(tatsuPlain(f, motionFrame(state, 4000)), settled);
+	state = advanceMotion(state, absent, 4100); state = advanceMotion(state, f, 4200);
+	assert.equal(motionFrame(state, 4200).tatsuBoot, 0);
+	const resumed = startMotion(f, 5000, 14, false);
+	assert.equal(resumed.tatsuBoot, undefined); assert.deepEqual(resumed.tatsuLatches, {});
+	assert.equal(tatsuPlain(f), settled, "motion off draws everything immediately");
+	const boot = advanceMotion(startMotion(absent, 0, 14, true), f, 100);
+	assert.equal(motionFrame(boot, 100).tatsuBoot, undefined);
+	assert.equal(tatsuPlain(f, motionFrame(boot, 100)), settled, "EXT footer boot uses existing style treatment, not blanks");
+});
+
+test("Tatsu: checking glyph cadence and gentle eight-step word fade share epoch and scheduler; off is steady", () => {
+	const f = tatsuFixture("checking", "checking"), epoch = 123, state = startMotion(f, epoch, 2, false);
+	const shapes = ["·", "•", "●", "•", "·"], levels = footer.TATSU_CHECK_FADE_LEVELS;
+	for (let step = 0; step <= 16; step++) {
+		for (const offset of [0, 149]) {
+			const now = epoch + step * 150 + offset, frame = motionFrame(state, now), cells = tatsuCells(f, frame);
+			assert.equal(text(cells).trimEnd(), `tatsu  CLI ${shapes[step % 5]} checking   WKS ${shapes[step % 5]} checking`);
+			for (const at of [11, 28]) {
+				assert.equal(cells[at].fg, "graphic");
+				const rgbText = fg(levels[step % 8]);
+				const word = renderFooter(f, 100, theme, frame).find((line: string) => stripTerminalSequences(line).includes("05 EXT"));
+				assert.ok(word.includes(rgbText));
+				assert.ok(cells.slice(at + 2, at + 10).every((c) => c.fg === cells[at + 2].fg));
+			}
+			assert.deepEqual(cells.slice(13, 21).map((c) => c.fg), cells.slice(30, 38).map((c) => c.fg));
+			assert.ok(nextMotionDelay(state, now) <= 150 - offset);
+		}
+	}
+	const off = tatsuCells(f);
+	assert.equal(text(off).trimEnd(), "tatsu  CLI · checking   WKS · checking");
+	assert.ok(off.slice(11, 21).filter((c) => c.ch !== " ").every((c) => c.fg === "graphic"));
+});
+
+test("Tatsu: completed-result latches current words only, no first/unchanged/checking/inactive replay", () => {
+	const current = tatsuFixture(), changed = tatsuFixture("behind", "current", { commitsBehind: 1 });
+	let state = startMotion(current, 0, 2, false);
+	state = advanceMotion(state, changed, 1000);
+	assert.equal(state.tatsuLatches["tatsu-cli"], 1000);
+	// Options apply to both fixture components: the count is part of each component's comparison key.
+	for (const [elapsed, bg, fg] of [[0, "primary", "field"], [50, "warn", "field"], [100, "warn", "field"], [150, "field", "warn"]] as const) {
+		const cells = tatsuCells(changed, motionFrame(state, 1000 + elapsed));
+		assert.equal(text(cells).trimEnd(), "tatsu  CLI ▲ update ×1   WKS ● current");
+		assert.ok(cells.slice(11, 22).filter((c) => c.ch !== " ").every((c) => c.bg === bg && c.fg === fg && c.bold));
+	}
+	state = advanceMotion(state, changed, 1200);
+	state = advanceMotion(state, tatsuFixture("checking", "checking"), 1300);
+	state = advanceMotion(state, changed, 1500); assert.deepEqual(state.tatsuLatches, {});
+	const count = tatsuFixture("behind", "current", { commitsBehind: 2 });
+	state = advanceMotion(state, count, 1700); assert.equal(state.tatsuLatches["tatsu-cli"], 1700);
+	const local = tatsuFixture("behind", "current", { commitsBehind: 2, localChanges: true });
+	state = advanceMotion(state, local, 1900); assert.equal(state.tatsuLatches["tatsu-cli"], 1900);
+	state = advanceMotion(state, { ...local, tatsu: { ...local.tatsu!, phase: "inactive" } }, 2000);
+	state = advanceMotion(state, current, 2200); assert.deepEqual(state.tatsuLatches, {});
+	const first = advanceMotion(startMotion({ ...current, tatsu: undefined }, 0, 2, false), current, 2500);
+	assert.deepEqual(first.tatsuLatches, {});
+	const resumed = startMotion(local, 2600, 2, false); assert.deepEqual(resumed.tatsuLatches, {}); assert.equal(resumed.tatsuBoot, undefined);
+});
+
+test("Tatsu: attention beacon is size-only at most once per four seconds, word/count unchanged; ambient excluded", () => {
+	const f = tatsuFixture("behind", "repair", { commitsBehind: 1 }), epoch = 100, state = startMotion(f, epoch, 2, false);
+	for (const [elapsed, shape, ink] of [[0, "▲", "warn"], [3849, "▲", "warn"], [3850, "▴", "warn"], [3900, "▴", "rgb(108,79,41)"], [3950, "▲", "rgb(108,79,41)"], [4000, "▲", "warn"], [7850, "▴", "warn"]] as const) {
+		const frame = motionFrame(state, epoch + elapsed), cells = tatsuCells(f, frame);
+		assert.equal(text(cells).trimEnd(), `tatsu  CLI ${shape} update ×1   WKS ${shape} repair`);
+		assert.equal(cells[11].fg, ink); assert.ok(cells.slice(13, 22).every((c) => c.fg === "warn"));
+	}
+	let onsets = 0, previous = false;
+	for (let elapsed = 0; elapsed < 12_000; elapsed += 50) {
+		const active = motionFrame(state, epoch + elapsed).tatsuBeacon !== undefined;
+		if (active && !previous) onsets++; previous = active;
+	}
+	assert.equal(onsets, 3);
+	assert.equal(tatsuPlain(f), "tatsu  CLI ▲ update ×1   WKS ▲ repair");
+	const ghost: FooterFrame = { ...SETTLED_FRAME, ghosts: { k: 0, items: [{ fam: "ghost", start: 0, at: { row: "ext", col: 8, colFrom: "plate" }, frames: [{ ch: "?", fg: "high" }] }] } };
+	assert.equal(tatsuPlain(f, ghost), tatsuPlain(f));
+});
