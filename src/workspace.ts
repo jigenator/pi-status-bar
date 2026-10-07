@@ -52,22 +52,36 @@ function commandEnv(git: boolean): NodeJS.ProcessEnv {
 
 function command(file: 'git' | 'gh', args: string[], cwd: string | undefined, options: Options = {}): Promise<CommandResult> {
   if (options.signal?.aborted) return Promise.resolve({ ok: false, stdout: '', stderr: '', reason: `${file} lookup cancelled` });
-  return new Promise((done) => {
-    execFile(file, args, {
+  const { signal } = options;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result: CommandResult) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abort);
+      resolve(result);
+    };
+    const child = execFile(file, args, {
       cwd, env: commandEnv(file === 'git'), encoding: 'utf8',
       timeout: file === 'git' ? 4000 : 10000, killSignal: 'SIGKILL',
-      maxBuffer: 1024 * 1024, signal: options.signal,
+      maxBuffer: 1024 * 1024,
     }, (error, stdout, stderr) => {
       if (!error) return done({ ok: true, stdout, stderr });
       const code = 'code' in error ? error.code : undefined;
-      const reason = error.name === 'AbortError' ? `${file} lookup cancelled`
-        : code === 'ENOENT' ? `${file} is not installed or executable`
+      const reason = code === 'ENOENT' ? `${file} is not installed or executable`
         : code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? `${file} output exceeded the safety limit`
         : error.killed ? `${file} lookup timed out`
         : `${file} command failed${typeof code === 'number' ? ` (exit ${code})` : ''}`;
       // Never return raw command stderr: it may contain credential-bearing URLs.
       done({ ok: false, stdout, stderr, code: typeof code === 'number' ? code : undefined, reason });
     });
+    // Not execFile's `signal`: aborting a spawn that failed with ENOENT before Node reports it
+    // signals pid 0, the caller's whole process group (Node 22.23). Kill only a started child.
+    function abort() {
+      if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      done({ ok: false, stdout: '', stderr: '', reason: `${file} lookup cancelled` });
+    }
+    signal?.addEventListener('abort', abort, { once: true });
   });
 }
 
