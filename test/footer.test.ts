@@ -1,9 +1,53 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import test from "node:test";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import nodeTest from "node:test";
 import type { FooterFrame, FooterSnapshot, FooterUsage, MotionState, UsageProviderState } from "../src/footer.ts";
+
+// Node 22's test runner gives each file its own process and argv[1] entry.
+// Each original case stays at module scope; only its registration is partitioned.
+const WIDTH_SHARDS = 6, EVENT_SHARDS = 2;
+const entry = resolve(process.argv[1] ?? ""), source = fileURLToPath(import.meta.url);
+const entryMatch = /^footer-shard-(\d{2})\.test\.ts$/.exec(basename(entry));
+const shard = entry === source ? 0 : dirname(entry) === dirname(source) && entryMatch ? Number(entryMatch[1]) : -1;
+assert.ok(Number.isInteger(shard) && shard >= 0 && shard < WIDTH_SHARDS + EVENT_SHARDS
+	&& (entry === source || shard > 0), `Unrecognized footer test entry: ${entry}`);
+const widthCases = new Set([
+	"primary-checkout metadata and PR URL are display-only omissions at every width and motion frame",
+	"plain, pending, unavailable, detached and unborn Git states stay identifiable, ordered and width safe",
+	"every line fits widths 1..160 for each state and motion frame, and no field is dropped",
+	"PNYTL layout: on the numeral's digit column (else right-aligned), model row or continuation before EXT, no truncation at widths 1..280",
+	"PNYTL transition frames stay width-safe at every width 1..280 and leave unrelated inline cells unchanged",
+	"linked-worktree footer (branch-only or directory first) and PNYTL coexist through mode changes and wrapping",
+	"USG wraps whole provider columns with their text rows; every line is bounded at widths 1..280 in every state and frame",
+	"USG row boot frames stay width-bounded at every width 1..280 on every tick",
+]);
+const eventCases = [
+	"re-strikes and ghosts touch only plates, panel ink, ROOT/AU and free frame cells; readable and fully recovered",
+	"PNYTL random plans: deterministic seed, varying nonempty subsets, only three foregrounds change and no ambient/boot overlay",
+];
+let caseIndex = 0, sweeping = false;
+const named = new Set<string>();
+const test = (name: string, run: () => void) => {
+	named.add(name);
+	const event = eventCases.indexOf(name);
+	if (event !== -1) {
+		if (shard === WIDTH_SHARDS + event) nodeTest(name, run);
+	} else if (widthCases.has(name)) {
+		const striped = () => { sweeping = true; try { run(); } finally { sweeping = false; } };
+		if (shard < WIDTH_SHARDS) nodeTest(`${name} [width shard ${shard + 1}/${WIDTH_SHARDS}]`, striped);
+	} else if (caseIndex++ % WIDTH_SHARDS === shard) nodeTest(name, run);
+};
+// A renamed case must not silently drop to one stripe or vanish from the routing lists.
+nodeTest.after(() => {
+	for (const name of [...widthCases, ...eventCases]) assert.ok(named.has(name), `footer shard routing names a missing case: ${name}`);
+});
+// Disjoint stripes retain every original width, state, frame and assertion.
+function* sweepWidths(first: number, last: number) {
+	assert.ok(sweeping, "sweepWidths is only striped inside a case listed in widthCases");
+	for (let width = first + shard; width <= last; width += WIDTH_SHARDS) yield width;
+}
 
 // Tests use the installed host, never a vendored width implementation or install.
 const require = createRequire(process.env.PI_HOST_ROOT ? resolve(process.env.PI_HOST_ROOT, "package.json") : import.meta.url);
@@ -11,7 +55,31 @@ const { createJiti } = require("jiti");
 const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false, alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui") } });
 const footer = await jiti.import(resolve("src/footer.ts"));
 const { renderFooter, safeText, startMotion, advanceMotion, motionFrame, nextMotionDelay, usageRepaintDelay, SETTLED_FRAME, MOTION_TICK_MS, USAGE_BOOT_TICKS, USAGE_SWEEP_CELLS_PER_TICK } = footer;
-const { visibleWidth, stripTerminalSequences, sliceByColumn, styleText } = await import(pathToFileURL(require.resolve("@earendil-works/pi-tui")).href);
+const { visibleWidth: hostVisibleWidth, stripTerminalSequences: hostStripTerminalSequences, sliceByColumn, styleText } = await import(pathToFileURL(require.resolve("@earendil-works/pi-tui")).href);
+const strippedLines = new Map<string, string>();
+const stripTerminalSequences = (line: string) => {
+	let plain = strippedLines.get(line);
+	if (plain === undefined) { plain = hostStripTerminalSequences(line); strippedLines.set(line, plain); }
+	return plain;
+};
+// Memoize only the host's answer for identical characters, never a width inferred
+// from layout. Every assertion remains; motion colors need no duplicate measurement.
+const measuredWidths = new Map<string, number>();
+const visibleWidth = (line: string) => {
+	const text = stripTerminalSequences(line);
+	let width = measuredWidths.get(text);
+	if (width === undefined) { width = hostVisibleWidth(text); measuredWidths.set(text, width); }
+	return width;
+};
+// Decoded rows are read-only throughout the cases; identical bytes need no
+// duplicate SGR parse. Keep the original decoder and every case unchanged.
+const decodedRows = new Map<string, TestCell[]>();
+const decodeRow = (line: string) => {
+	let cells = decodedRows.get(line);
+	if (cells === undefined) { cells = cellsOf(line); decodedRows.set(line, cells); }
+	return cells;
+};
+nodeTest.beforeEach(() => { measuredWidths.clear(); strippedLines.clear(); decodedRows.clear(); });
 // Same concrete-color conversion Pi's Theme.style uses; no semantic theme tokens are consulted.
 const hostTheme = (mode = "truecolor") => ({ style: (text: string, options: object) => styleText(text, options, mode), getColorMode: () => mode });
 const theme = hostTheme();
@@ -93,7 +161,7 @@ function cellsOf(line: string): TestCell[] {
 	}
 	return out;
 }
-const grid = (lines: string[]) => lines.map(cellsOf);
+const grid = (lines: string[]) => lines.map(decodeRow);
 // Shown like `plain`: a ghost-grey `■` reads `□`.
 const text = (cells: TestCell[]) => cells.map((c) => (c.ch === "■" && c.fg === "usageGhost" ? "□" : c.ch)).join("");
 const HEX: Record<string, [number, number, number]> = Object.fromEntries(Object.entries(PALETTE).map(([hex, n]) => [n, [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number]]));
@@ -513,7 +581,7 @@ test("primary-checkout metadata and PR URL are display-only omissions at every w
 	git.mainUnavailableReason = "hidden-primary-unavailable";
 	const absent = structuredClone(hidden); repository(absent).main = null;
 	const before = structuredClone(hidden), frames = eventFrames(f);
-	for (let width = 1; width <= 160; width++) for (const frame of frames) {
+	for (const width of sweepWidths(1, 160)) for (const frame of frames) {
 		const expected = renderFooter(f, width, theme, frame);
 		assert.deepEqual(renderFooter(hidden, width, theme, frame), expected, `${width}: no primary data rendered`);
 		assert.deepEqual(renderFooter(absent, width, theme, frame), expected, `${width}: no primary unavailable row`);
@@ -534,7 +602,7 @@ test("plain, pending, unavailable, detached and unborn Git states stay identifia
 	for (const [f, message, branchOnly] of [[none, "", false], [pending, "Gitpending", false], [unknown, "Gitunavailable(timeout)", false], [dirtyUnknown, "statusunavailable", true], [detached, "detached@abcdef", false], [unborn, "new-branch", true]] as const) {
 		f.launchPath = f.activePath; // cwd rows are covered separately
 		const frames = eventFrames(f);
-		for (let width = 1; width <= 160; width++) for (const frame of frames) {
+		for (const width of sweepWidths(1, 160)) for (const frame of frames) {
 			const lines = renderFooter(f, width, theme, frame), out = content(lines);
 			assert.ok(lines.every((line) => visibleWidth(line) <= width), `${message}@${width}`);
 			if (width < 3) continue;
@@ -657,7 +725,7 @@ test("every line fits widths 1..160 for each state and motion frame, and no fiel
 	for (const [percent, named] of [[0, true], [75, false], [95.5, true], [null, false]] as const) {
 		const f = hostile(named); f.contextUsage = { tokens: null, contextWindow: 2_000_000, percent };
 		const frames = eventFrames(f);
-		for (let width = 1; width <= 160; width++) {
+		for (const width of sweepWidths(1, 160)) {
 			for (const frame of frames) {
 				const lines = renderFooter(f, width, theme, frame);
 				for (const line of lines) assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)}`);
@@ -1216,7 +1284,7 @@ test("PNYTL layout: on the numeral's digit column (else right-aligned), model ro
 		const f = { ...session(), ponytail };
 		f.model = { ...f.model!, id: long ? "模型👩‍💻" + "long-model-".repeat(10) + "\x1b[2Jend" : "model" };
 		f.statuses = new Map([["ponytail", "\x1b[31mPonytail: ready\x1b[0m"], ["z", "status-".repeat(15)]]);
-		for (let width = 1; width <= 280; width++) {
+		for (const width of sweepWidths(1, 280)) {
 			const lines = renderFooter(f, width, theme), out = plain(lines), joined = out.join("").replace(/[\s┃┗┛━┏┓┼]/g, "");
 			assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `${width}/${ponytail}`);
 			assert.doesNotMatch(lines.join(""), /\x1b\[2J/);
@@ -1345,7 +1413,7 @@ test("PNYTL transition frames stay width-safe at every width 1..280 and leave un
 		let s = advanceMotion(startMotion(before, 0, seed, false), after, 1000);
 		for (const now of [1000, 1100, 1200, 1350, 1450]) {
 			s = advanceMotion(s, after, now); const frame = motionFrame(s, now);
-			for (let width = 1; width <= 280; width++) {
+			for (const width of sweepWidths(1, 280)) {
 				const lines = renderFooter(after, width, theme, frame);
 				assert.ok(lines.every((line: string) => visibleWidth(line) <= width), `${seed}/${now}/${width}`);
 				assert.ok(plain(lines).join("").replace(/[\s┃┗┛━┏┓┼]/g, "").includes("⌑PNYTL//FUL"));
@@ -1393,12 +1461,12 @@ test("linked-worktree footer (branch-only or directory first) and PNYTL coexist 
 			else assert.ok(rows[forkRow].slice(G, G + P).every((c) => c.ch === " " && c.bg === "field"), "Git details have no ACT continuation plate");
 		}
 	};
-	for (const snapshot of [f, unnamed]) for (const ponytail of ponytailStates) for (let width = 3; width <= 160; width++) check({ ...snapshot, ponytail }, width, SETTLED_FRAME);
+	for (const snapshot of [f, unnamed]) for (const ponytail of ponytailStates) for (const width of sweepWidths(3, 160)) check({ ...snapshot, ponytail }, width, SETTLED_FRAME);
 	const before = { ...f, ponytail: "lite" as const }, after = { ...f, ponytail: "full" as const };
 	const state = advanceMotion(startMotion(before, 0, 279, false), after, 1000);
 	assert.ok(state.ponytailBurst, "real mode transition remains active with the retained plate anchor fix");
 	const frames = [...eventFrames(after), ...[1000, 1100, 1200, 1350, 1450].map((now) => motionFrame(state, now))];
-	for (let width = 3; width <= 160; width++) for (const frame of frames) for (const snapshot of [after, { ...unnamed, ponytail: "full" as const }]) check(snapshot, width, frame);
+	for (const width of sweepWidths(3, 160)) for (const frame of frames) for (const snapshot of [after, { ...unnamed, ponytail: "full" as const }]) check(snapshot, width, frame);
 });
 
 /* ---------- USG: subscription usage windows ---------- */
@@ -1700,7 +1768,7 @@ test("USG wraps whole provider columns with their text rows; every line is bound
 		// Ambient footer events are layout-independent of these states, so the last two lists skip them.
 		const frames = [...(n < 3 ? eventFrames(f) : [SETTLED_FRAME]), motionFrame(state, 50), motionFrame(state, 200), motionFrame(state, 3990),
 			...[0, 520].map((t) => motionFrame(advanceMotion(booting, f, t), t)), motionFrame(filling, 160)];
-		for (let width = 1; width <= 280; width++) {
+		for (const width of sweepWidths(1, 280)) {
 			for (const frame of frames) {
 				const lines = renderFooter(f, width, theme, frame);
 				for (const line of lines) assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)}`);
@@ -2037,7 +2105,7 @@ test("USG row boot frames stay width-bounded at every width 1..280 on every tick
 		const f = withUsage(list);
 		for (let k = 0; k <= USAGE_BOOT_TICKS; k++) {
 			const frame = bootFrame(f, k);
-			for (let width = 1; width <= 280; width++) {
+			for (const width of sweepWidths(1, 280)) {
 				for (const line of renderFooter(f, width, theme, frame)) {
 					if (width >= 40) assert.equal(visibleWidth(line), width, `tick ${k} width ${width}`);
 					else assert.ok(visibleWidth(line) <= width, `tick ${k} width ${width}: ${JSON.stringify(line)}`);
@@ -2321,4 +2389,31 @@ test("Tatsu: attention beacon changes only the ▲ cell at most once per four se
 	assert.equal(tatsuPlain(f), " TCLI  ▲ UP×1    AWKS  ▲ FIX");
 	const ghost: FooterFrame = { ...SETTLED_FRAME, ghosts: { k: 0, items: [{ fam: "ghost", start: 0, at: { row: "ext", col: 8, colFrom: "plate" }, frames: [{ ch: "?", fg: "high" }] }] } };
 	assert.deepEqual(tatsuCells(f, ghost), tatsuCells(f));
+});
+
+test("SGR inside a grapheme retains the host's fragment clipping in runs and serialized rows", () => {
+	const f = session();
+	f.statuses = new Map([["cluster", "👩\x1b[31m‍💻"]]);
+	assert.equal(rows(f, 2).at(-1), "👩‍");
+	for (const width of [40, 60]) for (const spare of [2, 4, 6]) {
+		const G = metrics(width).G, room = width - 2 * G - 9;
+		const prefix = "x".repeat(room - spare);
+		f.statuses = new Map([["cluster", prefix + "👩\x1b[31m‍💻"]]);
+		const left = G === 2 ? "┗━" : "┗", right = G === 2 ? "━┛" : "┛";
+		// This is the host's existing byte-layout behavior, not new grapheme semantics.
+		const expected = spare === 2 ? left + " 05 EXT  " + prefix + "👩‍" + right
+			: left + " 05 EXT  " + prefix + "👩‍💻" + " ".repeat(spare - 4 + G);
+		assert.equal(rows(f, width).at(-1), expected, `${width}/${spare}`);
+	}
+});
+
+test("hand-built ghost frames with wide glyphs remain width bounded", () => {
+	const frame: FooterFrame = { ...SETTLED_FRAME, ghosts: { k: 0, items: [{
+		fam: "ghost", start: 0, at: { row: 0, col: 1, colFrom: "right" }, frames: [{ ch: "界", fg: "text" }],
+	}] } };
+	for (const width of [40, 60, 120]) {
+		const lines = renderFooter(session(), width, theme, frame);
+		assert.ok(plain(lines)[0].endsWith("界"), "the wide glyph actually enters the rendered row");
+		assert.ok(lines.every((line) => visibleWidth(line) <= width), `wide ghost at width ${width}`);
+	}
 });

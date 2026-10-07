@@ -28,7 +28,8 @@ export type PullRequestInfo =
   | { kind: 'not-applicable' };
 
 type CommandResult = { ok: boolean; stdout: string; stderr: string; code?: number; reason?: string };
-type Options = { signal?: AbortSignal };
+// The optional deadline applies to each command, not the whole inspection.
+type Options = { signal?: AbortSignal; timeoutMs?: number };
 
 // Inherited Git routing variables must not override the explicitly selected cwd.
 // Optional locks also prevent status from refreshing/writing the index.
@@ -63,7 +64,7 @@ function command(file: 'git' | 'gh', args: string[], cwd: string | undefined, op
     };
     const child = execFile(file, args, {
       cwd, env: commandEnv(file === 'git'), encoding: 'utf8',
-      timeout: file === 'git' ? 4000 : 10000, killSignal: 'SIGKILL',
+      timeout: options.timeoutMs ?? (file === 'git' ? 4000 : 10000), killSignal: 'SIGKILL',
       maxBuffer: 1024 * 1024,
     }, (error, stdout, stderr) => {
       if (!error) return done({ ok: true, stdout, stderr });
@@ -103,12 +104,12 @@ async function directory(path: string): Promise<string> {
   return canonical;
 }
 
-export async function resolveActivePath(input: string, launchPath: string): Promise<string> {
+export async function resolveActivePath(input: string, launchPath: string, options: Options = {}): Promise<string> {
   if (typeof input !== 'string' || input.length === 0 || input.includes('\0')) {
     throw new Error('Active path must be a non-empty directory path');
   }
   const path = await directory(resolve(launchPath, input));
-  const root = await command('git', ['rev-parse', '--show-toplevel'], path);
+  const root = await command('git', ['rev-parse', '--show-toplevel'], path, options);
   if (root.ok) return directory(line(root.stdout));
   if (notRepository(root) || noWorkingCheckout(root) || root.reason === 'git is not installed or executable') return path;
   throw new Error(root.reason ?? 'Cannot resolve Git checkout root');

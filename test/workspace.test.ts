@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { inspectPullRequest, inspectWorkspace, resolveActivePath } from '../src/workspace.ts';
 import type { GithubRepository, WorkspaceInfo } from '../src/workspace.ts';
 
@@ -41,8 +41,15 @@ async function fixture(run: (f: Fixture) => Promise<void>): Promise<void> {
   finally { await rm(root, { recursive: true, force: true }); }
 }
 
+let seed: string | undefined;
 async function repo(f: Fixture, name = 'repo', born = true): Promise<string> {
   const path = join(f.root, name);
+  if (born && seed) {
+    await cp(seed, path, { recursive: true });
+    assert.equal(f.git(path, 'config', 'user.name'), 'Workspace Test');
+    assert.equal(f.git(path, 'config', 'user.email'), 'workspace-test@example.invalid');
+    return path;
+  }
   await mkdir(path);
   f.git(path, 'init', '--initial-branch=trunk');
   // Commit attribution is isolated to disposable test repositories only.
@@ -64,18 +71,52 @@ function gitInfo(info: WorkspaceInfo): Extract<WorkspaceInfo['git'], { kind: 're
   return info.git;
 }
 
+// Reuse one immutable executable; per-fixture behavior is non-executable data.
+const launcherRoot = await mkdtemp(join(tmpdir(), 'pi-workspace-launcher-'));
+const launcher = join(launcherRoot, 'command');
+await writeFile(launcher, `#!${process.execPath}\nconst fs=require('node:fs'), path=require('node:path'); const args=process.argv.slice(2);
+const root=path.dirname(process.argv[1]);
+new Function('fs','args','require',fs.readFileSync(path.join(root,'body'),'utf8'))(fs,args,require);
+`);
+await chmod(launcher, 0o755);
+const gitLauncher = join(launcherRoot, 'git');
+const quote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+await writeFile(gitLauncher, `#!/bin/sh
+root=\${0%/*}
+mkdir -p "$root/calls.jsonl"
+printf '%s\\0' "$GIT_OPTIONAL_LOCKS" "$GIT_NO_LAZY_FETCH" "$@" > "$root/calls.jsonl/$$"
+. "$root/body"
+`);
+await chmod(gitLauncher, 0o755);
+// All born repositories start from independent copies of this read-only seed.
+await fixture(async (f) => {
+  const path = await repo(f);
+  const target = join(launcherRoot, 'seed');
+  await cp(path, target, { recursive: true });
+  seed = target;
+});
+after(() => rm(launcherRoot, { recursive: true, force: true }));
+
 // PATH stubs are disposable, deterministic executables; no live gh is invoked.
 async function mock(f: Fixture, file: 'git' | 'gh', body: string, run: (log: string) => Promise<void>): Promise<void> {
   const bin = join(f.root, `bin-${file}`);
   await mkdir(bin, { recursive: true });
   const log = join(bin, 'calls.jsonl');
-  await rm(log, { force: true });
+  await rm(log, { recursive: true, force: true });
   const executable = join(bin, file);
-  await writeFile(executable, `#!${process.execPath}\nconst fs=require('node:fs'); const args=process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,cwd:process.cwd(),optionalLocks:process.env.GIT_OPTIONAL_LOCKS,noLazyFetch:process.env.GIT_NO_LAZY_FETCH,promptDisabled:process.env.GH_PROMPT_DISABLED})+'\\n');\n${body}\n`);
-  await chmod(executable, 0o755);
+  await rm(executable, { force: true });
+  await symlink(file === 'git' ? gitLauncher : launcher, executable);
+  await writeFile(join(bin, 'body'), file === 'git' ? body : `fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,cwd:process.cwd(),optionalLocks:process.env.GIT_OPTIONAL_LOCKS,noLazyFetch:process.env.GIT_NO_LAZY_FETCH,promptDisabled:process.env.GH_PROMPT_DISABLED})+'\\n');\n${body}\n`);
   await withEnv({ ...process.env, PATH: `${bin}${delimiter}${originalPath}` }, () => run(log));
 }
-const realGitFallback = `const c=require('node:child_process').spawnSync('git',args,{cwd:process.cwd(),env:{...process.env,PATH:${JSON.stringify(originalPath)}},encoding:'utf8'}); process.stdout.write(c.stdout||''); process.stderr.write(c.stderr||''); process.exitCode=c.status;`;
+const realGitFallback = `PATH=${quote(originalPath)}; export PATH; exec git "$@"`;
+async function gitCalls(log: string) {
+  return Promise.all((await readdir(log)).map(async (name) => {
+    const [optionalLocks, noLazyFetch, ...args] = (await readFile(join(log, name), 'utf8')).split('\0');
+    args.pop(); // trailing NUL
+    return { optionalLocks, noLazyFetch, args };
+  }));
+}
 const response = (data: unknown) => `process.stdout.write(${JSON.stringify(JSON.stringify(data))});`;
 function pr(number = 7, headRepository = repository.name, branch = 'feature/safe'): Record<string, unknown> {
   return { number, state: 'open', html_url: `${repository.url}/pull/${number}`, head: { ref: branch, repo: { full_name: headRepository } }, base: { repo: { full_name: repository.name } } };
@@ -150,7 +191,7 @@ test('branch lookup failure is unavailable, not a detached active or main checko
   const active = join(f.root, 'linked');
   f.git(main, 'worktree', 'add', '-b', 'feature/safe', active);
   for (const failingPath of [active, main]) {
-    await mock(f, 'git', `if(args[0]==='symbolic-ref' && process.cwd()===${JSON.stringify(failingPath)}) { process.stderr.write('failure secret'); process.exitCode=128; } else {${realGitFallback}}`, async () => {
+    await mock(f, 'git', `if [ "$1" = symbolic-ref ] && [ "$(pwd -P)" = ${quote(failingPath)} ]; then printf '%s' 'failure secret' >&2; exit 128; else ${realGitFallback}; fi`, async () => {
       const info = await inspectWorkspace(active);
       if (failingPath === active) {
         assert.equal(info.git.kind, 'unknown');
@@ -191,7 +232,7 @@ test('missing/pruned or unrelated replacement main checkout is unavailable, not 
   const unrelated = await repo(f, 'replacement');
   for (const candidate of [join(f.root, 'gone-main'), unrelated]) {
     const record = `worktree ${candidate}\0HEAD abc\0\0`;
-    await mock(f, 'git', `if(args[0]==='worktree') process.stdout.write(${JSON.stringify(record)}); else {${realGitFallback}}`, async () => {
+    await mock(f, 'git', `if [ "$1" = worktree ]; then printf '%b' ${quote(record.replaceAll('\0', '\\000'))}; else ${realGitFallback}; fi`, async () => {
       const info = gitInfo(await inspectWorkspace(active));
       assert.equal(info.main, null);
       assert.ok(info.mainUnavailableReason);
@@ -288,13 +329,13 @@ test('Git absence, status errors and cancellation never claim clean or non-Git',
     assert.equal(await resolveActivePath(path, f.root), path);
     assert.equal((await inspectPullRequest(repository, 'feature/safe')).kind, 'unavailable');
   });
-  for (const failure of ["process.stderr.write('permission denied secret'); process.exitCode=128;", "process.stdout.write('x'.repeat(2*1024*1024));"]) {
-    await mock(f, 'git', `if(args.includes('status')) {${failure}} else {${realGitFallback}}`, async (log) => {
+  for (const failure of ["printf '%s' 'permission denied secret' >&2; exit 128", "dd if=/dev/zero bs=2097152 count=1 2>/dev/null"]) {
+    await mock(f, 'git', `case " $* " in *' status '*) ${failure};; *) ${realGitFallback};; esac`, async (log) => {
       const info = gitInfo(await inspectWorkspace(path));
       assert.equal(info.active.dirty, null);
       assert.ok(info.active.error);
       assert.equal(JSON.stringify(info).includes('secret'), false);
-      const calls = (await readFile(log, 'utf8')).trim().split('\n').map((entry) => JSON.parse(entry));
+      const calls = await gitCalls(log);
       assert.equal(calls.every((call) => call.optionalLocks === '0' && call.noLazyFetch === '1'), true);
     });
   }
@@ -305,13 +346,13 @@ test('Git absence, status errors and cancellation never claim clean or non-Git',
 }));
 
 test('bounded local Git timeout is unknown and active path resolution rejects it', async () => fixture(async (f) => {
-  await mock(f, 'git', 'setTimeout(()=>{},20000);', async () => {
+  await mock(f, 'git', 'exec sleep 20', async () => {
     const started = Date.now();
-    const info = await inspectWorkspace(f.root);
+    const info = await inspectWorkspace(f.root, { timeoutMs: 100 });
     assert.equal(info.git.kind, 'unknown');
     assert.match(JSON.stringify(info), /timed out/);
     assert.ok(Date.now() - started < 8000);
-    await assert.rejects(resolveActivePath(f.root, f.root), /timed out/);
+    await assert.rejects(resolveActivePath(f.root, f.root, { timeoutMs: 100 }), /timed out/);
   });
 }));
 
@@ -386,7 +427,7 @@ console.log('survived');`;
 test('GitHub timeout is unavailable, never no-open-PR', async () => fixture(async (f) => {
   await mock(f, 'gh', 'setTimeout(()=>{},20000);', async () => {
     const started = Date.now();
-    const info = await inspectPullRequest(repository, 'feature/safe');
+    const info = await inspectPullRequest(repository, 'feature/safe', { timeoutMs: 100 });
     assert.equal(info.kind, 'unavailable');
     assert.match(JSON.stringify(info), /timed out/);
     assert.ok(Date.now() - started < 15000);

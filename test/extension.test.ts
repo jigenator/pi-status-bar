@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { ChildProcess, execFileSync } from "node:child_process";
+import { chmod, cp, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { createRequire } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import test from "node:test";
+import test, { after } from "node:test";
 
 // This gate deliberately loads the ACTUAL workspace.ts. There is no skip or
 // provider stub: run only after the two component patches are integrated.
@@ -31,6 +31,10 @@ const shownText = (line: string) => stripTerminalSequences(line.replaceAll(`${GH
 const shown = (path: string) => `${basename(dirname(path))}/${basename(path)}`;
 const row = (text: string, label: string) => text.split("\n").find((line) => line.includes(label)) ?? "";
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
+const lines = async (path: string) => { try { return (await readFile(path, "utf8")).split("\n").filter(Boolean); } catch { return []; } };
+// Signal 0 only probes: a reaped child is gone, and the extension has seen its exit.
+const running = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error: any) { return error.code !== "ESRCH"; } };
 // Captured before any test mocks timers: waits on real subprocesses while adapter timers are mocked.
 const nativeSetTimeout = setTimeout;
 const realSleep = (ms: number) => new Promise((done) => nativeSetTimeout(done, ms));
@@ -43,32 +47,71 @@ async function until(check: () => boolean | Promise<boolean>) {
 	throw new Error("Timed out waiting for integrated extension");
 }
 
+// Fakes on PATH (POSIX sh: far faster to start than Node wrappers). PATH is only the fixture's `bin`, so utilities
+// are absolute; fixture paths come from PI_FOOTER_FIXTURE. Contents never vary because the OS checks a new
+// executable's content on its first run (~0.25 s on macOS); each fixture links these once-per-run files.
+// Every call logs its pid first. A `.hold-git` file in the cwd parks every Git call except
+// `rev-parse --show-toplevel` (selection and the first inspection step) until the file is removed.
+const fakeGit = `#!/bin/sh
+printf '%s %s %s\\n' "$$" "$PWD" "$*" >> "$PI_FOOTER_FIXTURE/git.log"
+if [ "$1" = symbolic-ref ] && [ -e .broken-head ]; then printf 'branch failure' >&2; exit 128; fi
+if [ "$1 $2" != "rev-parse --show-toplevel" ]; then while [ -e .hold-git ]; do /bin/sleep 0.02 </dev/null >/dev/null 2>&1; done; fi
+exec ${quote(git)} "$@"
+`;
+// Deterministic gh boundary, never a live account or network. [] either means
+// no PR or a truthful unavailable result if the domain rejects that protocol.
+const fakeGh = `#!/bin/sh
+printf '%s %s\\n' "$$" "$*" >> "$PI_FOOTER_FIXTURE/gh.log"
+printf '[]'
+`;
+// Deterministic `codexbar`: the n-th call for a provider prints `<provider>.<n>.json` (else `<provider>.json`) from
+// the fixture's `codexbar` directory, exits 1 for an error payload, and records SIGTERM. A `hold-<provider>.<n>` file
+// keeps that call pending until the test releases it, independent of real-time scheduling. The trap is armed
+// before the call is logged, so a logged call always records its SIGTERM.
+const fakeCodexbarScript = `#!/bin/sh
+p=$3 dir="$PI_FOOTER_FIXTURE/codexbar" log="$PI_FOOTER_FIXTURE/codexbar.log"
+trap 'printf "%s\\n" "$p" >> "$PI_FOOTER_FIXTURE/codexbar.kills"; exit 143' TERM
+prior=0; [ -e "$log" ] && prior=$(/usr/bin/grep -c -e " --provider $p " "$log")
+printf '%s %s\\n' "$$" "$*" >> "$log"
+while [ -e "$dir/hold-$p.$prior" ]; do /bin/sleep 0.02 </dev/null >/dev/null 2>&1; done
+if [ -e "$dir/$p.$prior.json" ]; then out=$(/bin/cat "$dir/$p.$prior.json"); else out=$(/bin/cat "$dir/$p.json" 2>/dev/null); fi
+printf '%s' "$out"
+case $out in *'"error"'*) exit 1 ;; esac
+`;
+const gitIsolation = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+const runGit = (cwd: string, args: string[], env: NodeJS.ProcessEnv = process.env) => execFileSync(git, ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { cwd, env, encoding: "utf8" });
+const shared = await realpath(await mkdtemp(join(tmpdir(), "pi-footer-shared-")));
+after(() => rm(shared, { recursive: true, force: true }));
+const fakes = join(shared, "fakes"), seed = join(shared, "seed");
+await Promise.all([fakes, seed].map((path) => mkdir(path)));
+for (const [name, script] of [["git", fakeGit], ["gh", fakeGh], ["codexbar", fakeCodexbarScript]]) {
+	await writeFile(join(fakes, name), script); await chmod(join(fakes, name), 0o755);
+}
+// One isolated seed repository (branch `release`, one empty commit); each fixture copies it.
+runGit(seed, ["init", "-b", "release"], { ...process.env, ...gitIsolation });
+runGit(seed, ["commit", "--allow-empty", "-m", "fixture"], { ...process.env, ...gitIsolation });
+
 async function fixtures(t: any) {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-footer-integration-")));
 	const bin = join(root, "bin"), launch = join(root, "launch"), plain = join(root, "plain ü"), repo = join(root, "repo"), second = join(root, "other repo");
-	await Promise.all([bin, launch, plain, repo, second].map((path) => mkdir(path)));
+	await Promise.all([bin, launch, plain].map((path) => mkdir(path)));
+	await Promise.all([repo, second].map((path) => cp(seed, path, { recursive: true })));
+	await Promise.all(["git", "gh"].map((name) => symlink(join(fakes, name), join(bin, name))));
 	const saved = { ...process.env };
-	Object.assign(process.env, { PATH: bin, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+	Object.assign(process.env, { PATH: bin, PI_FOOTER_FIXTURE: root, ...gitIsolation });
 	const gitLog = join(root, "git.log"), ghLog = join(root, "gh.log");
-	const gitScript = `#!${process.execPath}\nconst fs=require('node:fs'); const cp=require('node:child_process'); fs.appendFileSync(${JSON.stringify(gitLog)}, process.cwd()+' '+JSON.stringify(process.argv.slice(2))+'\\n'); const run=()=>{ const r=cp.spawnSync(${JSON.stringify(git)},process.argv.slice(2),{env:process.env}); if(r.stdout)process.stdout.write(r.stdout); if(r.stderr)process.stderr.write(r.stderr); process.exit(r.status??1); }; if(process.argv[2]==='symbolic-ref' && fs.existsSync(require('node:path').join(process.cwd(),'.broken-head'))) { process.stderr.write('branch failure'); process.exit(128); } if(fs.existsSync(require('node:path').join(process.cwd(),'.slow-git'))) setTimeout(run,150); else run();\n`;
-	await writeFile(join(bin, "git"), gitScript); await chmod(join(bin, "git"), 0o755);
-	// Deterministic gh boundary, never a live account or network. [] either means
-	// no PR or a truthful unavailable result if the domain rejects that protocol.
-	await writeFile(join(bin, "gh"), `#!${process.execPath}\nrequire('node:fs').appendFileSync(${JSON.stringify(ghLog)},JSON.stringify(process.argv.slice(2))+'\\n');setTimeout(()=>process.stdout.write('[]'),100);\n`);
-	await chmod(join(bin, "gh"), 0o755);
-	const runGit = (cwd: string, args: string[]) => execFileSync(git, ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", ...args], { cwd, env: process.env, encoding: "utf8" });
-	for (const cwd of [repo, second]) {
-		runGit(cwd, ["init", "-b", "release"]);
-		runGit(cwd, ["commit", "--allow-empty", "-m", "fixture"]);
-	}
 	t.after(async () => {
 		// Preserve Node's native environment object so os.homedir sees later HOME changes.
 		for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
 		Object.assign(process.env, saved);
 		await rm(root, { recursive: true, force: true });
 	});
-	const count = async (path: string) => { try { return (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).length; } catch { return 0; } };
-	return { root, launch, plain, repo, second, runGit, gitLog, ghLog, count };
+	const count = async (path: string) => (await lines(path)).length;
+	// Every Git and gh process has ended, so its result has reached the extension.
+	const idle = async () => [...await lines(gitLog), ...await lines(ghLog)].every((line) => !running(Number.parseInt(line)));
+	// Pids of `.hold-git` calls made in `cwd`.
+	const parked = async (cwd: string) => (await lines(gitLog)).filter((line) => line.includes(` ${cwd} `) && !line.endsWith(" rev-parse --show-toplevel")).map((line) => Number.parseInt(line));
+	return { root, launch, plain, repo, second, runGit, gitLog, ghLog, count, idle, parked };
 }
 
 async function harness(f: any, manager: any, mode = "tui", extra: { before?: string[]; after?: string[]; emptyStatuses?: boolean } = {}) {
@@ -216,7 +259,9 @@ test("CMP counts persisted active-branch compactions; restores and recounts with
 	const cmp = (h: any) => /CMP×(\S+)/.exec(h.text())?.[1];
 	compact(); const base = manager.getLeafId(); // inherited by both branches below
 	const h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
-	await until(() => !/Git pending/.test(h.text())); await sleep(300); await h.motion("off");
+	// Render counts below are compared across event emits only, which settle in microtasks: no timer or subprocess
+	// result can interleave, so no settling time is needed after startup.
+	await until(() => !/Git pending/.test(h.text())); await h.motion("off");
 	assert.equal(cmp(h), "01", "startup restores from the branch");
 	const entry = compact(); let renders = h.renders;
 	const done = { type: "session_compact", compactionEntry: entry, fromExtension: false, reason: "manual", willRetry: false };
@@ -270,15 +315,20 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 		h.setSettings({ compaction }); assert.match(h.text(), /48k\/128k/, JSON.stringify(compaction));
 	}
 	h.setSettings({});
-	await writeFile(join(f.second, ".slow-git"), "delay");
-	await h.select(f.second); await sleep(30); await h.select(f.plain);
+	// Inspections of `second` park in Git, so they are in flight when the next selection or shutdown arrives.
+	await writeFile(join(f.second, ".hold-git"), "hold");
+	const parkedEnded = async () => (await f.parked(f.second)).every((pid: number) => !running(pid));
+	await h.select(f.second); await until(async () => (await f.parked(f.second)).length > 0); await h.select(f.plain);
 	// The plain path is followed directly by CTX: no stale Git details in between.
 	const plainOnly = new RegExp(`01 ACT +${shown(f.plain).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} [^\\n⑂]*\\n +02 CTX `);
-	await until(() => plainOnly.test(h.text())); await sleep(700);
+	// Parked calls never finish on their own: once every one has been killed, the stale inspection has settled.
+	await until(() => plainOnly.test(h.text())); await until(parkedEnded);
 	assert.match(h.text(), plainOnly); assert.doesNotMatch(h.text(), /2\.1 MN|release|GitHub|Not a Git repository|No GitHub remote/);
 	assert.match(h.text(), / CMP×00 /, "CMP stays visible without repository data");
-	await h.select(f.second); await sleep(30); const priorRenders = h.renders;
-	await h.stop(); h.runner.invalidate(); await sleep(700);
+	const parkedBefore = (await f.parked(f.second)).length;
+	await h.select(f.second); await until(async () => (await f.parked(f.second)).length > parkedBefore); const priorRenders = h.renders;
+	// Shutdown aborts the parked inspection; two motion ticks follow, which would show a surviving decoration timer.
+	await h.stop(); h.runner.invalidate(); await until(parkedEnded); await sleep(100);
 	assert.equal(h.renders, priorRenders); assert.equal(h.component, undefined); assert.deepEqual(h.errors, []);
 });
 
@@ -307,26 +357,33 @@ test("session-scoped 15s refresh and repo/branch PR TTL; tree keeps cache, switc
 	f.runGit(f.second, ["remote", "add", "origin", "https://github.com/fixture/second.git"]);
 	t.mock.timers.enable({ apis: ["setInterval", "Date"] });
 	const manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager); t.after(() => h.stop()); await h.emitStart();
+	// Without decoration, a render here marks a finished local refresh, whose PR step has consulted the cache.
+	await h.motion("off");
+	// Git and the PR are both shown: a cached PR fills in with Git, a lookup leaves `lookup pending` until gh answers.
+	const settled = () => !/Git pending|GitHub pending|lookup pending/.test(h.text());
 	await h.select(f.repo); const selected = manager.getLeafId();
-	await until(async () => await f.count(f.ghLog) >= 1); await sleep(300);
+	await until(async () => await f.count(f.ghLog) >= 1 && settled());
 	const initial = await f.count(f.ghLog);
 	for (let n = 0; n < 3; n++) {
-		await h.runner.emit({ type: "tool_execution_end", toolCallId: `tool-${n}`, toolName: "read", result: { content: [], details: undefined }, isError: false }); await sleep(250);
+		const renders = h.renders;
+		await h.runner.emit({ type: "tool_execution_end", toolCallId: `tool-${n}`, toolName: "read", result: { content: [], details: undefined }, isError: false });
+		await until(() => h.renders > renders);
 	}
 	assert.equal(await f.count(f.ghLog), initial, "tools must not hit network per refresh");
-	await h.runner.emit({ type: "session_tree", newLeafId: selected, oldLeafId: selected }); await sleep(300);
+	await h.runner.emit({ type: "session_tree", newLeafId: selected, oldLeafId: selected }); await until(settled);
 	assert.equal(await f.count(f.ghLog), initial, "tree navigation retains the same-session PR TTL");
 	await writeFile(join(f.repo, "external"), "external change");
 	t.mock.timers.tick(15_000); await until(() => /modified/.test(h.text()));
 	assert.equal(await f.count(f.ghLog), initial);
-	t.mock.timers.tick(60_000); await until(async () => await f.count(f.ghLog) > initial); await sleep(300);
+	t.mock.timers.tick(60_000); await until(async () => await f.count(f.ghLog) > initial); await until(f.idle);
 	let count = await f.count(f.ghLog);
 	f.runGit(f.repo, ["checkout", "-b", "feature"]);
-	t.mock.timers.tick(15_000); await until(async () => await f.count(f.ghLog) > count); await sleep(300);
+	t.mock.timers.tick(15_000); await until(async () => await f.count(f.ghLog) > count); await until(f.idle);
 	count = await f.count(f.ghLog); await h.select(f.second);
-	await until(async () => await f.count(f.ghLog) > count); await sleep(300);
-	await h.stop(); await sleep(300);
-	const gitCount = await f.count(f.gitLog); t.mock.timers.tick(120_000); await sleep(300);
+	await until(async () => await f.count(f.ghLog) > count); await until(f.idle);
+	await h.stop(); await until(f.idle);
+	// A surviving interval would start Git within this window (an fs check, then a spawn).
+	const gitCount = await f.count(f.gitLog); t.mock.timers.tick(120_000); await sleep(100);
 	assert.equal(await f.count(f.gitLog), gitCount, "shutdown clears polling and pending work");
 	assert.deepEqual(h.errors, []);
 });
@@ -336,9 +393,11 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	const refTimers = () => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
 	const h = await harness(f, manager); t.after(() => h.stop());
 	const baseline = refTimers();
-	await h.emitStart(); await until(() => /01 ACT +\S+\/launch +▐/.test(h.text())); await sleep(200);
+	await h.emitStart(); await until(() => /01 ACT +\S+\/launch +▐/.test(h.text()) && !/Git pending/.test(h.text())); await until(f.idle);
 	const local = await f.count(f.gitLog), remote = await f.count(f.ghLog);
-	let renders = h.renders; await sleep(600);
+	// Real time first: wait for the next decoration wake (a boot tick, or an ambient event at most ~4.2 s after the
+	// last); Git or gh started by a wake would be logged meanwhile.
+	let renders = h.renders; await untilReal(() => h.renders > renders);
 	assert.ok(h.renders > renders, "decoration repaints itself while motion is on");
 	assert.equal(refTimers(), baseline, "animation and refresh timers are unref'd");
 	assert.equal(await f.count(f.gitLog), local, "animation never inspects Git");
@@ -349,27 +408,31 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	const cleared = t.mock.method(globalThis, "clearTimeout");
 	await h.motion("off");
 	assert.ok(cleared.mock.callCount() >= 1, "pausing clears the pending animation timeout"); cleared.mock.restore();
+	// The real animation timeout is cleared; every later decoration wake is on the mocked clock and runs only when
+	// advanced, so each 600 ms window below is exact. Subprocess waits stay on real time.
+	const advance = mockClock(t);
 	assert.deepEqual(h.notices.at(-1), ["info", "Footer motion off for this session"]);
 	const settled = h.text(); renders = h.renders;
 	assert.match(settled.split("\n")[0], /┓$/, "settled frame is fully drawn");
-	await sleep(600);
+	await advance(600);
 	assert.equal(h.renders, renders, "motion off leaves no repaint timer"); assert.equal(h.text(), settled);
 	h.setUsage({ tokens: null, contextWindow: 128_000, percent: null });
 	assert.match(h.text(), /\?\/112k[^\n]*\? UNKNOWN/, "live values still update with motion off");
 	await h.motion("sideways");
 	assert.deepEqual(h.notices.at(-1), ["warning", "Usage: /footer-motion [on|off]"]);
-	await sleep(300); assert.equal(h.renders, renders, "invalid arguments leave motion unchanged");
+	await advance(300); assert.equal(h.renders, renders, "invalid arguments leave motion unchanged");
 	await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
-	await sleep(300); renders = h.renders; // the restore's own local refresh may repaint once
-	await sleep(600); assert.equal(h.renders, renders, "same-session tree restore keeps the motion choice");
+	// The restore's own local refresh and status check may repaint once.
+	await untilReal(() => !/Git pending/.test(h.text())); await untilReal(f.idle); await advance(300); renders = h.renders;
+	await advance(600); assert.equal(h.renders, renders, "same-session tree restore keeps the motion choice");
 
-	await h.motion(""); renders = h.renders; await sleep(600);
+	await h.motion(""); renders = h.renders; await advance(600);
 	assert.ok(h.renders > renders, "empty argument toggles motion back on");
 	assert.equal(h.runner.getCommand("footer-motion").getArgumentCompletions("o").map((item: any) => item.value).join(), "on,off");
-	await h.stop(); h.runner.invalidate(); renders = h.renders; await sleep(600);
+	await h.stop(); h.runner.invalidate(); renders = h.renders; await advance(600);
 	assert.equal(h.renders, renders, "shutdown disposes the animation timer");
 	const fresh = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => fresh.stop());
-	await fresh.emitStart(); renders = fresh.renders; await sleep(600);
+	await fresh.emitStart(); renders = fresh.renders; await advance(600);
 	assert.ok(fresh.renders > renders, "a new session starts with motion on");
 	assert.deepEqual([...h.errors, ...fresh.errors], []);
 });
@@ -377,16 +440,23 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 const pingData = (manager: any) => ({ version: 1, session: { sessionId: manager.getSessionId() }, capabilities: { fleetStatus: { version: 1 } } });
 const fleetData = (units: number) => ({ fleet: { version: 1, entries: [], totalActive: units, omitted: units } });
 const replyListeners = (h: any) => [...h.subscriptions].filter(([name]: [string, number]) => name.startsWith("subagents:rpc:v1:reply:")).reduce((sum: number, [, n]: [string, number]) => sum + n, 0);
-// Keep real subprocess fixtures outside the mock-clock phase. Only this adapter's
-// activity/decoration timers are accelerated; the bus itself remains Pi's bus.
-async function activityClock(t: any, h: any) {
-	await until(() => !/Git pending/.test(h.text()));
-	await sleep(300);
-	await h.motion("off");
+// Mocks setTimeout and the decoration clock from now on; timers armed earlier stay real.
+function mockClock(t: any) {
 	let now = Math.ceil(performance.now());
 	t.mock.method(performance, "now", () => now);
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	return async (ms: number) => { now += ms; t.mock.timers.tick(ms); for (let n = 0; n < 16; n++) await Promise.resolve(); };
+}
+// Only this adapter's activity/decoration timers are accelerated, from before `start` installs the footer, so the
+// first fleet poll (250 ms after installation) runs when advanced; the bus itself remains Pi's bus. Subprocesses,
+// including execFile's own timeouts, stay on real time.
+async function activityClock(t: any, h: any, start: () => Promise<unknown>) {
+	const advance = mockClock(t);
+	await start();
+	await untilReal(() => !/Git pending/.test(h.text()));
+	await advance(250);
+	await h.motion("off");
+	return advance;
 }
 
 test("public fleet RPC: async bus delivery, exact AU overflow, independent ROOT settlement, live motion-off and bounded coalescing", async (t) => {
@@ -399,8 +469,7 @@ test("public fleet RPC: async bus delivery, exact AU overflow, independent ROOT 
 	});
 	// Owner ready before footer session_start is permitted; initial ping must find it.
 	h.events.emit("subagents:rpc:v1:ready", pingData(manager));
-	await h.emitStart();
-	const advance = await activityClock(t, h);
+	const advance = await activityClock(t, h, () => h.emitStart());
 	assert.match(h.text(), /103 AU/);
 	assert.equal(replyListeners(h), 0);
 	assert.deepEqual(h.requests.map((r: any) => r.method), ["ping", "status"]);
@@ -445,7 +514,7 @@ test("public fleet RPC rejects unsupported, malformed, wrong-session and error r
 	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager);
 	t.after(() => h.stop());
 	h.setRpc((request) => h.reply(request, request.method === "ping" ? pingData(manager) : fleetData(3)));
-	await h.emitStart(); const advance = await activityClock(t, h);
+	const advance = await activityClock(t, h, () => h.emitStart());
 	assert.match(h.text(), / 03 AU /);
 	const cases = [
 		{ method: "ping", data: { ...pingData(manager), version: 2 } },
@@ -505,7 +574,7 @@ test("fleet/decoration ownership: ready replacement, tree/new session, footer re
 	t.after(() => h.stop());
 	let delayed: any;
 	h.setRpc((request) => { if (request.method === "ping") h.reply(request, pingData(manager)); else delayed = request; });
-	await h.emitStart(); const advance = await activityClock(t, h);
+	const advance = await activityClock(t, h, () => h.emitStart());
 	assert.equal(replyListeners(h), 1);
 	const first = delayed;
 	h.events.emit("subagents:rpc:v1:ready", pingData(manager));
@@ -657,8 +726,8 @@ test("PNYTL lifecycle: no OFF evidence crosses session/UI; tree/new/reload/resum
 
 test("PNYTL live status/motion: immediate idle changes, no activity-only flashes, off-time replay or extra bus I/O", async (t) => {
 	const f = await fixtures(t), h = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { emptyStatuses: true });
-	t.after(() => h.stop()); await h.emitStart(); h.setStatus("ponytail", ponytailText("lite")); h.text();
-	const advance = await activityClock(t, h);
+	t.after(() => h.stop());
+	const advance = await activityClock(t, h, async () => { await h.emitStart(); h.setStatus("ponytail", ponytailText("lite")); h.text(); });
 	const modeInk = () => {
 		const line = h.component.render(120).find((line: string) => stripTerminalSequences(line).includes("PNYTL"));
 		const start = stripTerminalSequences(line).indexOf("PNYTL") + 9;
@@ -717,27 +786,16 @@ const usageSamples: Record<string, unknown> = {
 	kimi: [{ provider: "kimi", source: "Kimi Code API key", usage: { secondary: { usedPercent: 0, resetsAt: "2026-10-07T06:13:06Z", windowMinutes: 300 }, primary: { usedPercent: 7.000000000000001, resetsAt: "2026-10-13T15:13:06Z", windowMinutes: 10080 }, tertiary: null, updatedAt: "2026-10-07T03:03:20Z" } }],
 };
 const usageError = (provider: string) => [{ error: { message: "Not logged in. Secret account person@example.invalid", kind: "provider", code: 1 }, provider, source: "auto" }];
-// Deterministic `codexbar`: the n-th call for a provider prints `<provider>.<n>.json` (else `<provider>.json`) after
-// `delay-<provider>.<n>` (else `delay-<provider>`) ms, exits 1 for an error payload, and records SIGTERM.
+// Installs the shared fake `codexbar` with these answers (see `fakeCodexbarScript`).
 async function fakeCodexbar(f: any, files: Record<string, unknown> = usageSamples) {
 	const dir = join(f.root, "codexbar"), log = join(f.root, "codexbar.log"), kills = join(f.root, "codexbar.kills");
 	await mkdir(dir, { recursive: true });
 	const set = (name: string, value: unknown) => writeFile(join(dir, name), typeof value === "string" ? value : JSON.stringify(value));
 	for (const [provider, value] of Object.entries(files)) await set(`${provider}.json`, value);
-	await writeFile(join(f.root, "bin", "codexbar"), `#!${process.execPath}
-const fs=require('node:fs'), path=require('node:path'), args=process.argv.slice(2), p=args[2], dir=${JSON.stringify(dir)};
-const prior=fs.existsSync(${JSON.stringify(log)}) ? fs.readFileSync(${JSON.stringify(log)},'utf8').split('\\n').filter((line)=>line && JSON.parse(line).args[2]===p).length : 0;
-fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args})+'\\n');
-process.on('SIGTERM',()=>{ fs.appendFileSync(${JSON.stringify(kills)}, p+'\\n'); process.exit(143); });
-const pick=(...names)=>{ for (const name of names) { const file=path.join(dir,name); if (fs.existsSync(file)) return fs.readFileSync(file,'utf8'); } };
-const answer=()=>setTimeout(()=>{ const out=pick(p+'.'+prior+'.json', p+'.json') ?? ''; process.stdout.write(out); process.exitCode=out.includes('"error"') ? 1 : 0; }, Number(pick('delay-'+p+'.'+prior, 'delay-'+p) ?? 0));
-// A hold file keeps this call pending until the test releases it, independent of real-time scheduling.
-const hold=path.join(dir,'hold-'+p+'.'+prior);
-(function wait(){ if (fs.existsSync(hold)) setTimeout(wait, 20); else answer(); })();
-`);
-	await chmod(join(f.root, "bin", "codexbar"), 0o755);
-	const lines = async (path: string) => { try { return (await readFile(path, "utf8")).split("\n").filter(Boolean); } catch { return []; } };
-	return { set, release: (name: string) => rm(join(dir, name), { force: true }), calls: async () => (await lines(log)).map((line) => JSON.parse(line).args), kills: () => lines(kills) };
+	await symlink(join(fakes, "codexbar"), join(f.root, "bin", "codexbar"));
+	return { set, release: (name: string) => rm(join(dir, name), { force: true }), calls: async () => (await lines(log)).map((line) => line.split(" ").slice(1)), kills: () => lines(kills),
+		// Every call has ended, so the extension has its result (or abandoned it).
+		idle: async () => (await lines(log)).every((line) => !running(Number.parseInt(line))) };
 }
 // Mock only the adapter's timeouts and wall clock; real subprocesses keep running on real time.
 function usageClock(t: any) {
@@ -750,7 +808,9 @@ test("USG: missing codexbar (ENOENT) hides the row until a later poll finds it; 
 	const f = await fixtures(t), advance = usageClock(t);
 	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
 	await h.emitStart(); await h.motion("off");
-	await realSleep(400);
+	// The spawns fail at once and report ENOENT on the next tick, before any Git result: once the local inspection
+	// has finished, every provider has reported "not installed".
+	await untilReal(() => !/Git pending/.test(h.text()));
 	assert.doesNotMatch(h.text(), /USG|GPT|CLD|KMI/, "not installed: no row, not a failure state");
 	assert.match(h.text(), /05 EXT/);
 	const codexbar = await fakeCodexbar(f);
@@ -769,7 +829,10 @@ test("USG: missing codexbar (ENOENT) hides the row until a later poll finds it; 
 
 	await h.stop();
 	const print = await harness(f, host.SessionManager.inMemory(f.launch), "print"); t.after(() => print.stop());
-	await print.emitStart(); await realSleep(300); await advance(10 * 60_000); await realSleep(200);
+	// A poller would spawn synchronously, at start or in a timer callback; the spy sees it before any log line.
+	const spawns = t.mock.method(ChildProcess.prototype, "spawn");
+	await print.emitStart(); await advance(10 * 60_000); await untilReal(f.idle);
+	assert.deepEqual(spawns.mock.calls.map((call: any) => call.arguments[0].file).filter((file: string) => file !== "git"), [], "non-TUI modes never spawn codexbar");
 	assert.equal((await codexbar.calls()).length, 3, "non-TUI modes never run codexbar");
 	assert.deepEqual([...h.errors, ...print.errors], []);
 });
@@ -778,13 +841,14 @@ test("USG: concurrent first round with pending providers, single-flight 5-minute
 	// Without updatedAt, freshness is measured from receipt, so only a failure can make a provider stale here.
 	const fresh = Object.fromEntries(Object.entries(usageSamples).map(([provider, [item]]: [string, any]) => [provider, [{ ...item, usage: { ...item.usage, updatedAt: undefined } }]]));
 	const f = await fixtures(t), codexbar = await fakeCodexbar(f, fresh), advance = usageClock(t);
-	await codexbar.set("delay-claude.0", 1500);
+	await codexbar.set("hold-claude.0", "");
 	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
 	await h.emitStart(); await h.motion("off");
 	// Kimi and Codex answer first; Claude is still pending, never shown as a failure or zero.
 	await untilReal(() => /KMI ■/.test(h.text()) && /GPT ■/.test(h.text()));
 	let [squares, countdowns] = usgRows(h);
 	assert.match(squares, /CLD ········ ········/); assert.match(countdowns, /^\S? +6d2h +pending +3h09m +6d12h/);
+	await codexbar.release("hold-claude.0");
 	await untilReal(() => /CLD ■/.test(h.text()));
 	assert.equal((await codexbar.calls()).length, 3, "one concurrent call per provider");
 
@@ -797,19 +861,22 @@ test("USG: concurrent first round with pending providers, single-flight 5-minute
 	assert.match(usgRows(h)[1], / 1h14m /);
 	renders = h.renders; await advance(1_000); assert.equal(h.renders, renders, "no repaint until the next change");
 
-	// The next round starts 5 minutes after the last completed; a slow call blocks a second round (single flight).
-	await codexbar.set("delay-claude.1", 800);
+	// The next round starts 5 minutes after the last completed; a held call blocks a second round (single flight).
+	await codexbar.set("hold-claude.1", "");
 	await advance(4 * 60_000);
 	await untilReal(async () => (await codexbar.calls()).length === 6);
-	// Stay under the 60 s deadline (it runs on the mocked clock); past it the call would time out.
-	await advance(50_000); await realSleep(200);
+	// Stay under the 60 s deadline (it runs on the mocked clock); past it the call would time out. A round would
+	// spawn synchronously in the timer callback, so the spy sees it before any log line.
+	const spawns = t.mock.method(ChildProcess.prototype, "spawn");
+	await advance(50_000);
+	assert.equal(spawns.mock.callCount(), 0, "no new round while a call is in flight"); spawns.mock.restore();
 	assert.equal((await codexbar.calls()).length, 6, "no new round while a call is in flight");
-	await realSleep(900);
+	// Releasing Claude completes the round, which arms the next one.
+	await codexbar.release("hold-claude.1"); await untilReal(codexbar.idle);
 	// Claude's next call fails: the last good windows stay, dimmed with their age, never the raw error.
 	await codexbar.set("claude.2.json", usageError("claude"));
 	await advance(5 * 60_000);
-	await untilReal(async () => (await codexbar.calls()).length === 9);
-	await realSleep(300);
+	await untilReal(async () => (await codexbar.calls()).length === 9 && await codexbar.idle());
 	[squares, countdowns] = usgRows(h);
 	assert.match(squares, /CLD ■■■■■■■□ ■■■■■■■■/);
 	const under = (tag: string) => countdowns[squares.indexOf(tag)];
@@ -910,32 +977,36 @@ test("USG: a row that appears after startup draws in over the next decoration wa
 
 test("USG: shutdown and footer/tree replacement abort in-flight calls, clear timers and never accept stale results", async (t) => {
 	const f = await fixtures(t), codexbar = await fakeCodexbar(f), advance = usageClock(t);
-	// First-round calls are slow and report nearly exhausted windows; later calls are the real samples.
-	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`delay-${provider}.0`, 1500);
+	// First-round calls are held and report nearly exhausted windows; later calls are the real samples.
+	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`hold-${provider}.0`, "");
 	await codexbar.set("claude.0.json", [{ provider: "claude", usage: { primary: { usedPercent: 99, resetsAt: "2026-10-07T04:20:00Z", windowMinutes: 300 } } }]);
 	const manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager); t.after(() => h.stop());
 	await h.emitStart(); await h.motion("off");
+	// A logged call has its SIGTERM trap armed.
 	await untilReal(async () => (await codexbar.calls()).length === 3);
-	await realSleep(200);
 	// Same-session tree restore replaces the footer: the old round is aborted and its results are discarded.
 	await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
 	await untilReal(async () => (await codexbar.kills()).length === 3);
 	await untilReal(() => /CLD ■■■■■■■□ ■■■■■■■■/.test(h.text()));
-	await realSleep(1600);
+	// Held calls answer only once released; each was killed first, so no first-round output exists to arrive later.
 	assert.doesNotMatch(h.text(), /CLD ■□□□□□□□/, "aborted first-round data never renders");
 	assert.equal((await codexbar.calls()).length, 6);
 	// Footer replacement keeps the session's cached data and starts a fresh round.
 	h.replaceFooter();
 	assert.match(h.text(), /CLD ■■■■■■■□ ■■■■■■■■/);
-	await untilReal(async () => (await codexbar.calls()).length === 9); await realSleep(300);
-	// Shutdown aborts in-flight work and clears the poll and minute timers.
-	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`delay-${provider}`, 3000);
+	// The fresh round completes, which arms the next poll.
+	await untilReal(async () => (await codexbar.calls()).length === 9 && await codexbar.idle());
+	// Shutdown aborts in-flight (held) work and clears the poll and minute timers.
+	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`hold-${provider}.3`, "");
 	await advance(5 * 60_000);
-	await untilReal(async () => (await codexbar.calls()).length === 12); await realSleep(200);
+	await untilReal(async () => (await codexbar.calls()).length === 12);
 	const renders = h.renders;
 	await h.stop();
 	await untilReal(async () => (await codexbar.kills()).length === 6);
-	await advance(30 * 60_000); await realSleep(300);
+	// A poll would spawn synchronously in its timer callback, so the spy sees it before any log line.
+	const spawns = t.mock.method(ChildProcess.prototype, "spawn");
+	await advance(30 * 60_000);
+	assert.equal(spawns.mock.callCount(), 0, "no poll after shutdown");
 	assert.equal((await codexbar.calls()).length, 12, "no poll after shutdown");
 	assert.equal(h.renders, renders, "no repaint after shutdown");
 	assert.deepEqual(h.errors, []);
