@@ -94,7 +94,7 @@ The optional pi-tatsu-status-bar **public v1** snapshot produces one EXT entry: 
 | checking | `· checking` | Graphic grey `#717171` (word fade with motion) |
 | inactive component in an active snapshot | `· inactive` | Graphic grey |
 
-Only valid checking/completed snapshots replace the provider's raw `tatsu-status` entry. They remain visible when the provider's own text is hidden. Absent/invalid/incompatible/inactive snapshots retain raw text exactly through the existing sanitizer/style/wrap path, or no entry if the provider clears it. Unknown is never success-shaped. The footer does not register a formatter, change provider configuration, run checks or poll.
+Only valid checking/completed snapshots replace the provider's raw `tatsu-status` entry. The provider re-checks every five minutes and briefly reports both components as checking each time; once a completed result has been shown, a refresh keeps that last completed result on screen, so the text only changes when a new result differs. `checking` appears only before the first completed result (session start, or after inactive, invalid or absent data cleared it). They remain visible when the provider's own text is hidden. Absent/invalid/incompatible/inactive snapshots retain raw text exactly through the existing sanitizer/style/wrap path, or no entry if the provider clears it. Unknown is never success-shaped. The footer does not register a formatter, change provider configuration, run checks or poll.
 
 Four decorations use only the existing single timeout:
 
@@ -166,7 +166,7 @@ Paths, branches, URLs, errors, and status content are treated as untrusted termi
 | Tatsu valid checking/completed | Structured entry in the original sorted EXT position, even with provider text hidden |
 | Tatsu absent/invalid/incompatible/inactive | Raw provider status remains in EXT, or no entry if cleared; no inferred success |
 | Tatsu first appearance / completed change / behind or repair | Draw-in / one 150 ms style latch / size-only triangle beacon once per four seconds |
-| Tatsu checking | Grey placeholder shape cycles every 150 ms; word gently fades over 1200 ms with both components in phase |
+| Tatsu checking (no completed result held yet; a refresh keeps the last completed result instead) | Grey placeholder shape cycles every 150 ms; word gently fades over 1200 ms with both components in phase |
 | Motion off | Settled frame; live values continue to update |
 | Non-TUI mode | Tool, state, and motion command continue; no footer, decoration timer, fleet collector, PNYTL/Tatsu observer or CodexBar poller is installed |
 

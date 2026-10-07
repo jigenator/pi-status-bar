@@ -327,12 +327,16 @@ export default function (pi: ExtensionAPI) {
 
 	// Public synchronous discovery plus pushes, with no provider imports, formatter or polling.
 	function observeTatsu(s: SessionState): TatsuObserver {
-		let live = true, latest: TatsuSnapshot | undefined;
+		// `completed` is the last completed result; a later refresh (phase checking) keeps showing it, so only a changed
+		// result changes the text. Checking shows only before the first result; inactive, invalid or absent data clear it.
+		let live = true, latest: TatsuSnapshot | undefined, completed: TatsuSnapshot | undefined;
 		const ui = s.ctx.ui;
 		const owned = () => live && current(s) && s.tatsuObserver === observer && s.ctx.mode === "tui" && s.ctx.ui === ui && s.ctx.sessionManager.getSessionId() === s.id;
 		const accept = (raw: unknown) => {
 			if (!owned()) return;
 			try { latest = tatsuSnapshot(raw); } catch { latest = undefined; }
+			if (latest?.phase === "completed") completed = latest;
+			else if (latest?.phase !== "checking") completed = undefined;
 			s.requestRender?.();
 		};
 		const request = () => {
@@ -346,9 +350,11 @@ export default function (pi: ExtensionAPI) {
 					catch { accept(undefined); }
 				} });
 			} finally { requesting = false; }
+			if (!latest) completed = undefined;
 			s.requestRender?.(); // no synchronous reply means absent; never wait
 		};
-		const observer: TatsuObserver = { read: () => owned() ? latest : undefined, dispose() { live = false; offChanged(); offReady(); latest = undefined; } };
+		const observer: TatsuObserver = { read: () => !owned() ? undefined : latest?.phase === "checking" && completed ? completed : latest,
+			dispose() { live = false; offChanged(); offReady(); latest = completed = undefined; } };
 		s.tatsuObserver = observer;
 		// Subscribe before request so either provider load order and restart is recoverable.
 		const offChanged = pi.events.on("tatsu-status:changed", accept);

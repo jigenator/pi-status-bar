@@ -985,9 +985,13 @@ test("Tatsu public events: real loader in both orders, replacement/fallback, hid
 		pushTatsu(h, tatsuDTO("behind", { commitsBehind: 1, localChanges: true }));
 		assert.ok(h.renders > renders); assert.match(h.text(), /TCLI ▲ update ×1 ◆ local edits/); assert.doesNotMatch(h.text(), /raw Tatsu fallback/);
 		pushTatsu(h, tatsuDTO("checking", {}, "checking"), undefined);
-		assert.match(h.text(), /TCLI · checking   AWKS · checking/); assert.equal(h.statuses.has("tatsu-status"), false, "hidden default text still has structured display");
+		assert.match(h.text(), /TCLI ▲ update ×1 ◆ local edits/, "a refresh keeps the last completed result"); assert.doesNotMatch(h.text(), /checking/);
+		assert.equal(h.statuses.has("tatsu-status"), false, "hidden default text still has structured display");
+		pushTatsu(h, tatsuDTO("current"), undefined); assert.match(h.text(), /TCLI • current   AWKS • current/, "only a changed result changes the text");
 		pushTatsu(h, tatsuDTO("inactive", {}, "inactive")); assert.match(h.text(), /raw Tatsu fallback/); assert.doesNotMatch(h.text(), /TCLI/);
 		pushTatsu(h, tatsuDTO("inactive", {}, "inactive"), undefined); assert.doesNotMatch(h.text(), /05 EXT|TCLI/);
+		pushTatsu(h, tatsuDTO("checking", {}, "checking"), undefined);
+		assert.match(h.text(), /TCLI · checking   AWKS · checking/, "checking shows only when no completed result is held");
 		pushTatsu(h, tatsuDTO("repair", { localChanges: true }));
 		const requests = tatsuRequests(h); h.events.emit("test:tatsu", { kind: "restart" }); assert.equal(tatsuRequests(h), requests + 1);
 		assert.match(h.text(), /TCLI ▲ repair ◆ local edits/);
