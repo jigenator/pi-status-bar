@@ -152,7 +152,7 @@ type Zone = "plate" | "digits" | "labels" | "root" | "badge";
 // One terminal column of a renderer-owned glyph. `ghost` admits registration ghosts; `zone` admits re-strikes.
 type Cell = Style & { ch: string; ghost?: boolean; frame?: boolean; zone?: Zone };
 // Pre-styled untrusted text: never split into cells and never touched by decoration.
-type Run = { run: string; width: number };
+type Run = { run: string; width: number; scanWidth: number };
 type Part = Cell | Run;
 const isRun = (part: Part): part is Run => "run" in part;
 
@@ -1010,7 +1010,11 @@ const tickAt = (value: number, n: number) => Math.min(n - 1, Math.max(0, Math.fl
 const zoneOf = (i: number, n: number): Tone => (i >= tickAt(90, n) ? "high" : i >= tickAt(70, n) ? "warn" : "ok");
 
 const cell = (ch: string, fg: Hue = "text", bg: Hue = "field", bold = false): Cell => ({ ch, fg, bg, bold });
-const blanks = (n: number, bg: Hue = "field", ghost = false): Cell[] => Array.from({ length: Math.max(0, n) }, () => ({ ch: " ", bg, ghost }));
+const blanks = (n: number, bg: Hue = "field", ghost = false): Cell[] => {
+	const out = new Array<Cell>(Math.max(0, Math.floor(n)));
+	for (let i = 0; i < out.length; i++) out[i] = { ch: " ", bg, ghost };
+	return out;
+};
 const letters = (text: string, style: Style, zone?: Zone): Cell[] => [...text].map((ch) => ({ ch, ...style, zone }));
 const widthOf = (parts: Part[]) => parts.reduce((sum, part) => sum + (isRun(part) ? part.width : 1), 0);
 const PENDING: Style = { fg: "secondary", bg: "surface" }, LOCKED: Style = { fg: "field", bg: "primary", bold: true };
@@ -1026,24 +1030,40 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const lines = wrapTextWithAnsi(text, Math.max(1, w)).filter((line) => stripTerminalSequences(line).trim());
 		return lines.length ? lines : [""];
 	};
+	const measureRun = (run: string): Run => {
+		// Character widths reuse the host cache across differently styled frames.
+		const plain = stripTerminalSequences(run), width = visibleWidth(plain);
+		// The host truncator segments each SGR-separated fragment independently.
+		// A style inserted inside an emoji/cluster can therefore cost more than its
+		// visible width. Preserve that clipping behavior, including at serialization.
+		// ASCII and these fixed glyphs cannot form a cluster across a style boundary.
+		const scanWidth = /^[\x20-\x7e⑂■⌑•□·▪]*$/u.test(plain) ? width
+			: run.split(/\x1b\[[0-9;:]*m/g).reduce((sum, fragment) => sum + visibleWidth(fragment), 0);
+		return { run, width, scanWidth };
+	};
 	const runOf = (line: string, w: number): Run => {
-		const kept = truncateToWidth(line, Math.max(0, w), "");
-		return { run: kept, width: visibleWidth(kept) };
+		const measured = measureRun(line);
+		if (w > 0 && measured.width <= w && measured.scanWidth <= w) return measured;
+		return measureRun(truncateToWidth(line, Math.max(0, w), ""));
 	};
 	const runPad = (line: string, w: number, bg: Hue = "field", ghost = true): Part[] => {
 		const run = runOf(line, w);
 		return [run, ...blanks(w - run.width, bg, ghost)];
 	};
+	let scanRows: Set<Part[]> | undefined;
 	const serialize = (parts: Part[]) => {
-		let out = "", text = "", current: Cell | undefined;
+		let out = "", text = "", current: Cell | undefined, columns = 0, scanColumns = 0;
 		const flush = () => { if (current && text) out += paint(text, current); text = ""; current = undefined; };
 		for (const part of parts) {
-			if (isRun(part)) { flush(); if (part.run) out += part.run + RESET; continue; }
+			if (isRun(part)) { columns += part.width; scanColumns += part.scanWidth; flush(); if (part.run) out += part.run + RESET; continue; }
+			columns++; scanColumns++;
 			if (current && (current.fg ?? "text") === (part.fg ?? "text") && (current.bg ?? "field") === (part.bg ?? "field") && !!current.bold === !!part.bold && !!current.underline === !!part.underline) text += part.ch;
 			else { flush(); current = part; text = part.ch; }
 		}
 		flush();
-		return truncateToWidth(out, W, "");
+		// Owned glyphs are single-column cells; runs carry their host-measured width.
+		// Check the layout budget before skipping the expensive ANSI/grapheme scan.
+		return columns <= W && scanColumns <= W && !scanRows?.has(parts) ? out : truncateToWidth(out, W, "");
 	};
 
 	/* ---------- boot treatments: the current values, restyled; characters never change ---------- */
@@ -1593,6 +1613,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 					if ("hide" in s) { write(r, c, { ch: " ", bg: cur.bg }); continue; }
 					const fg = s.fg === "@edge" ? cellAt(r, G + P - 1)?.bg : s.fg === "@edgeL" ? cellAt(r, G)?.bg : s.fg;
 					if (!fg || fg === "field") continue;
+					// Motion plans use these single-column glyphs. A hand-built frame may
+					// supply anything else; keep the host's width scan for that row.
+					if (s.ch.length !== 1 || !"┏┓┗┛┃━┼▌▐".includes(s.ch)) (scanRows ??= new Set()).add(rows[r]);
 					write(r, c, { ch: s.ch, fg, bg: cur.bg });
 					continue;
 				}

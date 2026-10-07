@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { USAGE_PROVIDERS, fetchUsage } from '../src/usage.ts';
 import type { UsageProviderId } from '../src/usage.ts';
 
@@ -43,11 +43,21 @@ const failure = [{ error: { message: "Not logged in to Gemini. Run 'gemini' in T
 const at = (iso: string) => Date.parse(iso);
 
 // A disposable fake `codexbar` on PATH; no live CodexBar, provider account or network.
+// Reuse one immutable executable: macOS checks each newly written executable at
+// first launch. Payloads live in non-executable files in each isolated fixture.
+const launcherRoot = await mkdtemp(join(tmpdir(), 'pi-usage-launcher-'));
+const launcher = join(launcherRoot, 'codexbar');
+await writeFile(launcher, `#!${process.execPath}\nconst fs=require('node:fs'), path=require('node:path'); const args=process.argv.slice(2);
+const root=path.dirname(process.argv[1]);
+new Function('fs','args',fs.readFileSync(path.join(root,'body'),'utf8'))(fs,args);
+`);
+await chmod(launcher, 0o755);
+after(() => rm(launcherRoot, { recursive: true, force: true }));
 async function fake(body: string, run: (log: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'pi-usage-'));
   const log = join(root, 'calls.jsonl');
-  await writeFile(join(root, 'codexbar'), `#!${process.execPath}\nconst fs=require('node:fs'); const args=process.argv.slice(2);\nfs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,noColor:process.env.NO_COLOR,pid:process.pid})+'\\n');\n${body}\n`);
-  await chmod(join(root, 'codexbar'), 0o755);
+  await symlink(launcher, join(root, 'codexbar'));
+  await writeFile(join(root, 'body'), `fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args,noColor:process.env.NO_COLOR,pid:process.pid})+'\\n');\n${body}\n`);
   const path = process.env.PATH;
   process.env.PATH = `${root}${delimiter}${path ?? ''}`;
   try { await run(log); }
@@ -112,12 +122,12 @@ test('ENOENT is not-installed; timeout and abort are distinct and leave no runni
 
   await fake(`setTimeout(()=>process.stdout.write(${JSON.stringify(JSON.stringify(kimi))}),5000);`, async (log) => {
     const started = Date.now();
-    assert.deepEqual(await fetchUsage('kimi', { timeoutMs: 600 }), { kind: 'unavailable', reason: 'timeout' });
+    assert.deepEqual(await fetchUsage('kimi', { timeoutMs: 200 }), { kind: 'unavailable', reason: 'timeout' });
     assert.ok(Date.now() - started < 3000, 'the bound applies');
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 600); // after the child has started
+    setTimeout(() => controller.abort(), 200); // after the child has started
     assert.deepEqual(await fetchUsage('kimi', { signal: controller.signal }), { kind: 'unavailable', reason: 'cancelled' });
-    await sleep(200);
+    await sleep(50);
     const spawned = await calls(log);
     assert.equal(spawned.length, 2);
     for (const { pid } of spawned) assert.equal(alive(pid), false, 'timeout and abort terminate the child');
@@ -130,15 +140,15 @@ test('ENOENT is not-installed; timeout and abort are distinct and leave no runni
 test('a child that ignores SIGTERM settles at the deadline or abort and is killed after the grace period', async () => {
   await fake(`process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);`, async (log) => {
     const started = Date.now();
-    assert.deepEqual(await fetchUsage('kimi', { timeoutMs: 400, killGraceMs: 400 }), { kind: 'unavailable', reason: 'timeout' });
+    assert.deepEqual(await fetchUsage('kimi', { timeoutMs: 200, killGraceMs: 100 }), { kind: 'unavailable', reason: 'timeout' });
     assert.ok(Date.now() - started < 1500, 'settles at the deadline, not when the child exits');
     const controller = new AbortController();
-    setTimeout(() => controller.abort(), 400);
-    assert.deepEqual(await fetchUsage('kimi', { signal: controller.signal, killGraceMs: 400 }), { kind: 'unavailable', reason: 'cancelled' });
+    setTimeout(() => controller.abort(), 200);
+    assert.deepEqual(await fetchUsage('kimi', { signal: controller.signal, killGraceMs: 100 }), { kind: 'unavailable', reason: 'cancelled' });
     const spawned = await calls(log);
     assert.equal(spawned.length, 2);
     assert.ok(spawned.some(({ pid }) => alive(pid)), 'SIGTERM alone does not stop it');
-    await sleep(1200);
+    await sleep(300);
     for (const { pid } of spawned) assert.equal(alive(pid), false, 'escalated to SIGKILL');
   });
 });

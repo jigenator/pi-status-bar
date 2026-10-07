@@ -30,7 +30,7 @@ flowchart LR
 | `src/footer.ts` | Pure, fixed-palette, width-safe, terminal-safe rendering and time-to-decoration frames | `renderFooter`, `safeText`, `FooterSnapshot`, motion functions, `usageRepaintDelay` | Node path helpers, Pi types/TUI color and width helpers, workspace and usage types only |
 | `test/workspace.test.ts` | Domain/contract coverage | Node test file | Disposable Git repositories and fake executables |
 | `test/usage.test.ts` | CodexBar contract coverage | Node test file | Fake `codexbar` executables on PATH |
-| `test/footer.test.ts` | Renderer coverage | Node test file | Installed host TUI through Jiti |
+| `test/footer.test.ts` | Renderer coverage | Node test file, also run as process-parallel shards by the one-line `test/footer-shard-NN.test.ts` entries | Installed host TUI through Jiti |
 | `test/extension.test.ts` | Package/host/lifecycle integration | Node test file | Real installed Pi loader/runtime, disposable fixtures, fake `gh` and `codexbar` |
 
 The reusable domain modules never depend on UI/process-exit/session state. The adapter supplies the home directory in `FooterSnapshot` for display abbreviation, the wall-clock time for USG countdowns, and the monotonic time as a decoration frame; the renderer never reads the environment or a clock and performs no I/O. The Pi adapter owns all orchestration and does not duplicate Git/PR parsing or presentation rules.

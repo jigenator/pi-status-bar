@@ -11,7 +11,7 @@ export PI_HOST_ROOT="$(npm root -g)/@earendil-works/pi-coding-agent"
 test -f "$PI_HOST_ROOT/dist/index.js"
 ```
 
-This only discovers an existing global installation. Do not run an installer to make a test silently pass. Workspace fixtures create disposable repositories under the operating-system temp directory, isolate Git identity/configuration, and use a fake `gh` and a fake `codexbar`; they do not use a live GitHub account, CodexBar, provider account or network.
+This only discovers an existing global installation. Do not run an installer to make a test silently pass. Workspace fixtures create disposable repositories under the operating-system temp directory, isolate Git identity/configuration, and use a fake `gh` and a fake `codexbar`; they do not use a live GitHub account, CodexBar, provider account or network. The fakes are POSIX `sh` scripts that need `/bin/sh`, `/bin/sleep`, `/bin/cat` and `/usr/bin/grep`.
 
 ## Fast loop
 
@@ -30,8 +30,10 @@ node --experimental-strip-types --test test/usage.test.ts
 For renderer changes after setting `PI_HOST_ROOT`:
 
 ```sh
-PI_HOST_ROOT="$PI_HOST_ROOT" node --experimental-strip-types --test test/footer.test.ts
+PI_HOST_ROOT="$PI_HOST_ROOT" node --experimental-strip-types --test test/footer*.test.ts
 ```
+
+`test/footer.test.ts` alone runs only its first shard; the glob runs every shard in parallel processes.
 
 These focused commands do not cover extension lifecycle, package loading, session restoration, or every other module.
 
