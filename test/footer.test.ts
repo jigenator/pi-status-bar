@@ -1118,12 +1118,12 @@ function ponytailCells(lines: string[]) {
 	return row.slice(start, start + 18);
 }
 
-test("PNYTL activity light: icon alternates with a pink • at 100/100 ms only while Ponytail reports activity; motion off holds it lit", () => {
+test("PNYTL activity light: icon alternates with a pink • at 50/50 ms only while Ponytail reports activity; motion off holds it lit", () => {
 	const icon = (snapshot: FooterSnapshot, frame?: FooterFrame) => { const c = ponytailCells(renderFooter(snapshot, 120, theme, frame))[2]; return [c.ch, c.fg, c.bg]; };
 	const idle: FooterSnapshot = { ...session(), ponytail: "full", ponytailActive: false }, active: FooterSnapshot = { ...idle, ponytailActive: true };
 	const at = (pulse: number | null): FooterFrame => ({ ...SETTLED_FRAME, pulse });
 	for (let pulse = 0; pulse < 32; pulse++) {
-		assert.deepEqual(icon(active, at(pulse)), pulse % 4 < 2 ? ["•", "pink", "text"] : ["⌑", "field", "text"], `pulse ${pulse}: two 50 ms ticks lit, two unlit`);
+		assert.deepEqual(icon(active, at(pulse)), pulse % 2 === 0 ? ["•", "pink", "text"] : ["⌑", "field", "text"], `pulse ${pulse}: alternate 50 ms ticks lit and unlit`);
 		assert.deepEqual(icon(idle, at(pulse)), ["⌑", "field", "text"], "idle never lights");
 	}
 	assert.deepEqual(icon(active), ["•", "pink", "text"], "motion off holds the light on, like ROOT");
@@ -1137,7 +1137,7 @@ test("PNYTL activity light: icon alternates with a pink • at 100/100 ms only w
 		assert.deepEqual(on.filter((_, i) => i !== 2), off.filter((_, i) => i !== 2), `${width}: rest of the plate unchanged`);
 		assert.ok(renderFooter(active, width, theme, at(0)).every((line) => visibleWidth(line) <= width));
 	}
-	// The scheduler wakes for every light change: 200 ms per blink, 5 a second, four times ROOT's 800 ms cycle.
+	// The scheduler wakes for every light change: every 50 ms tick, 100 ms per blink, 10 a second (the tick-limited maximum).
 	const quiet: FooterSnapshot = { ...active, activity: { working: false, units: 0 } };
 	let state = startMotion(quiet, 0, 5, false), now = 0, last: boolean | undefined;
 	const onsets: number[] = [];
@@ -1147,8 +1147,8 @@ test("PNYTL activity light: icon alternates with a pink • at 100/100 ms only w
 		if (lit && last === false) onsets.push(now);
 		last = lit; now += nextMotionDelay(state, now);
 	}
-	assert.ok(onsets.length >= 49 && onsets.slice(1).every((t, i) => t - onsets[i] === 200), `${onsets.slice(0, 6)}`);
-	for (const t of onsets) assert.ok(onsets.filter((u) => u >= t && u < t + 1000).length <= 5, "at most five flashes in any second");
+	assert.ok(onsets.length >= 99 && onsets.slice(1).every((t, i) => t - onsets[i] === 100), `${onsets.slice(0, 6)}`);
+	for (const t of onsets) assert.ok(onsets.filter((u) => u >= t && u < t + 1000).length <= 10, "at most ten flashes in any second");
 	// Activity changes are tracked without disturbing other decoration memory.
 	const s0 = startMotion(idle, 0, 5, false), s1 = advanceMotion(s0, active, 10);
 	assert.equal(s0.ponytailActive, false); assert.equal(s1.ponytailActive, true); assert.equal(s1.ponytailBurst, undefined, "activity is not a mode change");
