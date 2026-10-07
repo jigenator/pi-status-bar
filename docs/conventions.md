@@ -2,7 +2,7 @@
 
 ## Project profile
 
-Pi Status Bar is a TypeScript ESM Pi package for Node.js 22.19+. Runtime code is `src/extension.ts`, `src/footer.ts`, and `src/workspace.ts`; Pi supplies the host, TUI, and TypeBox peers declared in `package.json`. Tests use Node's built-in runner and TypeScript stripping.
+Pi Status Bar is a TypeScript ESM Pi package for Node.js 22.19+. Runtime code is `src/extension.ts`, `src/footer.ts`, `src/workspace.ts`, and `src/usage.ts`; Pi supplies the host, TUI, and TypeBox peers declared in `package.json`. Tests use Node's built-in runner and TypeScript stripping.
 
 Scope reviewed: baseline revision `60d738faa2b2264005717e599c4a917f69c59419`, the complete integrated source/test tree, `package.json`, and installed Pi 1.0.2 package/extension/TUI APIs and pi-subagents 0.76.0 public activity contract (native v9 integration on 2026-10-05). The installed host was read-only. This is a focused review of the complete current repository, not a claim about other Pi versions or platforms.
 
@@ -29,15 +29,15 @@ Conversion map: there were no existing documents to move, merge, alias, or remov
 
 ## Module and dependency rules
 
-**Rule:** dependency direction is `src/extension.ts -> src/workspace.ts` and `src/extension.ts -> src/footer.ts`; `src/footer.ts` may import workspace types only, and `src/workspace.ts` must not import Pi UI/session modules. **Example:** `renderFooter` receives a `FooterSnapshot`, while `inspectWorkspace` returns a discriminated `WorkspaceInfo`. **Reason:** local/GitHub semantics remain testable without Pi and rendering remains free of I/O. **Check:** inspect imports and run all three matching test files.
+**Rule:** dependency direction is `src/extension.ts -> src/workspace.ts`, `src/extension.ts -> src/usage.ts` and `src/extension.ts -> src/footer.ts`; `src/footer.ts` may import workspace and usage types only, and neither `src/workspace.ts` nor `src/usage.ts` may import Pi UI/session modules. **Example:** `renderFooter` receives a `FooterSnapshot`, while `inspectWorkspace` returns a discriminated `WorkspaceInfo`. **Reason:** local/GitHub semantics remain testable without Pi and rendering remains free of I/O. **Check:** inspect imports and run all three matching test files.
 
-**Rule:** use the exported workspace types/functions as the public internal contract; keep subprocess parsing and renderer helpers private unless a real second caller needs them. **Example:** `resolveActivePath`, `inspectWorkspace`, and `inspectPullRequest` are the only runtime exports from `src/workspace.ts`. **Reason:** broad exports couple callers to parsing details. **Check:** review exports and contract-focused workspace tests.
+**Rule:** use the exported workspace types/functions as the public internal contract; keep subprocess parsing and renderer helpers private unless a real second caller needs them. **Example:** `resolveActivePath`, `inspectWorkspace`, and `inspectPullRequest` are the only runtime exports from `src/workspace.ts`; `USAGE_PROVIDERS` and `fetchUsage` are the only ones from `src/usage.ts`. **Reason:** broad exports couple callers to parsing details. **Check:** review exports and contract-focused workspace tests.
 
 Cycles are forbidden. Do not create a `shared`, `utils`, `helpers`, or `manager` module to conceal one; move behavior to the capability that owns its semantics.
 
 ## Placement and naming
 
-**Rule:** capability files live directly under `src/` and have matching tests under `test/`: `workspace`, `footer`, and `extension`. **Reason:** this small package's real boundaries are clearer than additional nesting. **Check:** a new file must represent a cohesive new capability that cannot fit an existing owner.
+**Rule:** capability files live directly under `src/` and have matching tests under `test/`: `workspace`, `usage`, `footer`, and `extension`. **Reason:** this small package's real boundaries are clearer than additional nesting. **Check:** a new file must represent a cohesive new capability that cannot fit an existing owner.
 
 Use descriptive lower-case filenames and named exports for reusable domain/render functions; the Pi runtime entry remains the default export from `src/extension.ts`. Place disposable fixtures inside tests and the OS temp directory. No migrations or generated source exist. `node_modules/` is ignored and must not be committed.
 
@@ -53,7 +53,7 @@ Public compatibility currently consists of the package entry, tool name/schema/d
 
 **Rule:** represent absence, unknown/unavailable, and success as discriminated unions; nullable checkout fields keep their documented meaning. **Example:** `dirty: null` means unavailable and can never mean clean; PR `none` is distinct from `unavailable`. **Reason:** static types and UI text must prevent false reassurance. **Check:** workspace and footer tests assert every state.
 
-**Rule:** validate untrusted data at runtime even when typed. Optional fleet RPC must validate protocol, request identity, same-session capability, fleet version and safe nonnegative counts; failure is null/Unknown, never zero. Counts come from the authoritative total, not the bounded entries window. **Example:** GitHub remote URLs and `gh` JSON fields are checked for repository identity, branch, number, state, URL, ambiguity, truncation, and control characters. Tool paths must be non-empty existing directories and are canonicalized. **Reason:** subprocess and tool inputs cross runtime boundaries. **Check:** malformed/spoofed/hostile fixtures in all three test files.
+**Rule:** validate untrusted data at runtime even when typed. Optional fleet RPC must validate protocol, request identity, same-session capability, fleet version and safe nonnegative counts; failure is null/Unknown, never zero. Counts come from the authoritative total, not the bounded entries window. **Example:** GitHub remote URLs and `gh` JSON fields are checked for repository identity, branch, number, state, URL, ambiguity, truncation, and control characters. CodexBar output must be a one-element array for the requested provider; windows are identified by length, and only finite percentages and ISO instants are kept, never identity, email or credits. Tool paths must be non-empty existing directories and are canonicalized. **Reason:** subprocess and tool inputs cross runtime boundaries. **Check:** malformed/spoofed/hostile fixtures in all three test files.
 
 **Rule:** Ponytail status integration consumes only verified, bounded text from key `ponytail`; all other keys and unrecognized Ponytail warnings remain visible. OFF requires an observed explicit clear, never map absence. The narrow public `setStatus` observer must forward original behavior, detach reversibly without overwriting foreign wrappers, and not stack across footer replacements. **Check:** matching real-host status/lifecycle tests in `test/extension.test.ts`; activation and version assumptions in [architecture](architecture.md#ponytail-status-integration).
 
@@ -67,7 +67,7 @@ Invalid `set_active_project` calls throw and preserve the previous selection. Un
 
 ## State, I/O, and migrations
 
-**Rule:** subprocess I/O belongs only in `src/workspace.ts` and uses `execFile` with explicit argv/cwd, sanitized environment, output limits, timeouts, and cancellation. Local Git is read-only with optional locks/lazy fetch disabled. `gh api` is an explicit read-only GET. **Check:** command-argument/environment tests and real disposable Git fixtures.
+**Rule:** subprocess I/O belongs only in `src/workspace.ts` and `src/usage.ts` and uses `execFile` with explicit argv/cwd, sanitized environment, output limits, timeouts, and cancellation. Local Git is read-only with optional locks/lazy fetch disabled. `gh api` is an explicit read-only GET. `codexbar usage ... --json-only` is read-only. Never kill a child that has no pid: on Node 22.23, execFile's own `signal` aborting a spawn that failed with ENOENT signals pid 0, the caller's whole process group, so `src/usage.ts` aborts manually and escalates SIGTERM to SIGKILL after five seconds. **Check:** command-argument/environment tests, real disposable Git fixtures and the detached-process-group abort test in `test/usage.test.ts`.
 
 **Rule:** session state belongs in the `SessionState` owned by `src/extension.ts`. Selection changes cancel prior local/PR work; every async completion verifies session/controller/path/key ownership. Timers, controllers, public RPC reply/ready listeners and in-flight ownership are disposed on shutdown/footer disposal. A reply listener and bounded timeout must exist before emit; Pi event-bus emission does not await async handler completion. **Check:** stale-selection, disposal, and polling tests.
 
@@ -78,10 +78,11 @@ Successful selection details are stored in the Pi session branch and restored on
 Use the lowest layer that owns the behavior:
 
 - `test/workspace.test.ts`: domain/contract tests with real disposable Git and deterministic fake executables.
+- `test/usage.test.ts`: CodexBar contract tests with a deterministic fake `codexbar` on PATH.
 - `test/footer.test.ts`: pure renderer states, snapshots, palette, width, motion frames/schedule, and sanitization.
 - `test/extension.test.ts`: real installed Pi package loading, tool/lifecycle/session persistence, refresh/cache, cancellation, and disposal.
 
-**Rule:** no test may depend on a live GitHub account/network, user Git identity, hooks, signing, or ambient Git routing. **Reason:** tests must be deterministic and non-destructive. **Check:** fixture setup isolates config and replaces `gh`.
+**Rule:** no test may depend on a live GitHub account/network, a live CodexBar or provider account, user Git identity, hooks, signing, or ambient Git routing. **Reason:** tests must be deterministic and non-destructive. **Check:** fixture setup isolates config and replaces `gh`.
 
 See `CONTRIBUTING.md` for the only canonical commands and prerequisites. A skipped integrated boundary or missing host does not establish a full pass.
 
@@ -93,7 +94,7 @@ A new dependency requires a current need, comparison with stdlib/host APIs, main
 
 ## Performance and growth
 
-Current bounded behavior: one unref'd decoration timeout, renderer-selected next wake with 50 ms transient granularity, none when `/footer-motion off`; independent fleet collection normally five seconds after completion, coalesced event refreshes with a one-second minimum start-to-start interval, one local RPC outstanding and a two-second timeout per request. The owner may use artifact-backed fallback status; client timeout cannot cancel that work. Root state is read from `isIdle()`, not inferred from event names or child count. Local status refreshes after tool completion and every 15 seconds in TUI mode; PR results cache for 60 seconds by repository URL/name and branch. Git commands time out after 4 seconds, `gh` after 10 seconds, and subprocess output is capped at 1 MiB. Rendering and decoration wakes perform no collection I/O and line output is width-bounded. Baseline pre-v9 render timings and settled repaint rates do not establish v9 performance; no new render-cost/full-host measurement is claimed.
+Current bounded behavior: one unref'd decoration timeout, renderer-selected next wake with 50 ms transient granularity, none when `/footer-motion off`; independent fleet collection normally five seconds after completion, coalesced event refreshes with a one-second minimum start-to-start interval, one local RPC outstanding and a two-second timeout per request. The owner may use artifact-backed fallback status; client timeout cannot cancel that work. Root state is read from `isIdle()`, not inferred from event names or child count. Local status refreshes after tool completion and every 15 seconds in TUI mode; PR results cache for 60 seconds by repository URL/name and branch. Git commands time out after 4 seconds, `gh` after 10 seconds, `codexbar` after 60 seconds (settling at once, SIGKILL five seconds after SIGTERM), and subprocess output is capped at 1 MiB. CodexBar is polled for three providers concurrently in TUI mode, five minutes after each round completes, with one call per provider in flight; USG countdowns repaint only when a displayed minute can change. Rendering and decoration wakes perform no collection I/O and line output is width-bounded. Baseline pre-v9 render timings and settled repaint rates do not establish v9 performance; no new render-cost/full-host measurement is claimed.
 
 No production workload or measured bottleneck exists. Treat suspected redraw, process-count, or large-repository cost as a measurement task before adding watchers, workers, services, persistence, or another cache. Revisit intervals only with observed latency/load data and lifecycle tests.
 
@@ -104,6 +105,7 @@ No production workload or measured bottleneck exists. Treat suspected redraw, pr
 | No standalone static typecheck, formatter, linter, build, or CI gate | Medium; current checks are runtime tests and syntax stripping | Evaluate the smallest tool only when maintainers approve dependency/tooling expansion | Proposed check—not implemented; do not claim these gates today |
 | No manual live interactive-terminal/motion review | Medium for presentation; automated palette, width and motion checks pass | Exercise the unpackaged local extension at representative widths and color modes without changing user settings | Manual check—not run |
 | No live fleet-owner smoke test | Medium; real Pi loader/event bus with deterministic offline replies is covered | Opt-in read-only observation with a separately authorized live owner; do not launch agents just to test | Manual check—not run |
+| No live CodexBar validation | Low for deterministic correctness; parsing uses recorded 0.60.3 samples and a fake executable | Opt-in read-only `codexbar usage` observation on a machine where it is already configured | Manual check—not run |
 | No live authenticated GitHub validation | Low for deterministic correctness; API boundary is mocked and validated | Run a read-only opt-in smoke against a controlled public repository if explicitly authorized | Opt-in check—not implemented; normal suite remains offline |
 | Agent can forget to update Active | Product limitation inherent in explicit signaling | Collect evidence before changing the decision; do not infer from incidental reads | Revisit condition in the decision record |
 | Windows execution is untested | Unknown relevance; implementation uses platform APIs but POSIX fixtures | Add platform CI only when Windows support is required | Proposed check—not implemented |
