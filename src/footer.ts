@@ -141,6 +141,7 @@ const knownCount = (count: unknown) => typeof count === "number" && Number.isSaf
 const unitBadge = (units: number | undefined) => ` ${units === undefined ? " ?" : String(units).padStart(2, "0")} AU `;
 // Fixed eight-cell compaction plate: 00–99, then 99+ in the trailing pad cell; ?? when unknown.
 const cmpPlate = (count: number | undefined) => count === undefined ? " CMP×?? " : count > 99 ? " CMP×99+" : ` CMP×${String(count).padStart(2, "0")} `;
+const USG_PLATE: Style = { fg: "field", bg: "pink", bold: true };
 const cmpStyle = (count: number | undefined): Style => ({
 	...(count === undefined || count === 0 ? { fg: "text", bg: "plate" } : count <= 2 ? { fg: "text", bg: "violet" } : count <= 4 ? { fg: "field", bg: "pink" } : { fg: "field", bg: "high" }),
 	bold: true,
@@ -1132,7 +1133,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const settled = Math.max(0, front - sweep - x);
 		return truncateToWidth(text, settled, "") + paint([...stripTerminalSequences(text)].slice(settled, Math.max(0, front - x)).join(""), LOCKED);
 	};
-	const usgPlate = letters(` ${LABEL.usg}`.padEnd(8), GREY_PLATE);
+	// The USG plate is the Marathon pink (the CMP 3–4 plate pair), black bold lettering at 6.1:1.
+	const usgPlate = letters(` ${LABEL.usg}`.padEnd(8), USG_PLATE);
 
 	const { percent, tone, windowText, tokensText } = contextOf(snapshot);
 	const readoutText = `${tokensText}${windowText ? `/${windowText}` : ""}`;
@@ -1176,7 +1178,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		if (usageGroups.length) {
 			// Inline label, then the first group beside it when it fits; text rows stay under their squares.
 			const fitted = usageGroups.flatMap((group) => splitGroup(group, W));
-			const label = paint(` ${LABEL.usg} `, GREY_PLATE) + gap(), inline = footprint(fitted[0]) <= W - 9;
+			const label = paint(` ${LABEL.usg} `, USG_PLATE) + gap(), inline = footprint(fitted[0]) <= W - 9;
 			if (!inline) lines.push(serialize(runPad(drawInText(label, 0, topFront), W)));
 			// The row boot sweeps every line from its own left edge; the blank label column stays blank.
 			usageLines(fitted, inline ? W - 9 : W, W).forEach((line, i) => {

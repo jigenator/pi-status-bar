@@ -1449,7 +1449,7 @@ test("USG snapshot: real samples at 100/48/30 columns, row order, collapse, plat
 	assert.doesNotMatch(rows(session()).join("\n"), /USG/);
 	assert.doesNotMatch(rows(withUsage([])).join("\n"), /USG/);
 	const g = grid(renderFooter(f, 100, theme)), row = g[6], below = g[7], at = (s: string) => text(row).indexOf(s);
-	assert.ok(row.slice(2, 10).every((c) => c.fg === "text" && c.bg === "plate" && c.bold), "grey numbered plate");
+	assert.ok(row.slice(2, 10).every((c) => c.fg === "field" && c.bg === "pink" && c.bold), "pink numbered plate, black lettering");
 	for (const [tag, lit, used] of [["GPT", "text", "codexUsed"], ["CLD", "claude", "claudeUsed"], ["KMI", "kimi", "kimiUsed"]]) {
 		assert.ok(row.slice(at(tag), at(tag) + 3).every((c) => c.fg === lit && c.bold && c.bg === "field"), `${tag} bold in its lit color`);
 		const squares = row.slice(at(tag) + 4).filter((c) => "■□".includes(c.ch)).slice(0, tag === "GPT" ? 8 : 16);
