@@ -1,6 +1,7 @@
 import { basename, dirname, isAbsolute, relative, sep } from "node:path";
 import type { ContextUsage, Theme } from "@earendil-works/pi-coding-agent";
 import { backgroundAnsi, foregroundAnsi, rgbColor, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { UsageProviderId, UsageWindow, UsageWindows } from "./usage.ts";
 import type { CheckoutInfo, PullRequestInfo, WorkspaceInfo } from "./workspace.ts";
 
 /** Confirmed producer modes, distinct from checking/unavailable display state. */
@@ -8,6 +9,12 @@ export type PonytailMode = "off" | "lite" | "full" | "ultra" | "review";
 export type PonytailState = PonytailMode | "checking" | "unknown";
 /** Root session state and native active-work units. Absent activity or null units are unknown, never zero. */
 export type FooterActivity = { working: boolean; units: number | null };
+/** Last good CodexBar sample. `fetchedAt` is the adapter's wall-clock receipt time and identifies the sample. */
+export type UsageSample = { windows: UsageWindows; updatedAt: number | null; fetchedAt: number };
+/** Never fetched (neither field), the last good sample, and/or the latest fetch's failure. */
+export type UsageProviderState = { provider: UsageProviderId; data?: UsageSample; failure?: "timeout" | "unavailable" };
+/** Supplied only once CodexBar is known to be installed. `now` is wall-clock epoch ms from the adapter. */
+export type FooterUsage = { now: number; providers: readonly UsageProviderState[] };
 export type FooterSnapshot = {
 	homePath: string;
 	launchPath: string;
@@ -27,6 +34,8 @@ export type FooterSnapshot = {
 	compactions?: number | null;
 	/** Pi's effective compaction reserve for the model; absent when auto-compaction is off or the setting is unusable. */
 	compactionReserve?: number;
+	/** Subscription usage windows; absent hides the USG row (CodexBar missing or not yet detected). */
+	usage?: FooterUsage;
 };
 /** Pi's theme converts these concrete colors for truecolor or 256-color terminals. */
 export type FooterTheme = Pick<Theme, "style" | "getColorMode">;
@@ -84,6 +93,10 @@ const C = {
 	pink: rgbColor(0xff, 0x15, 0xbd), // CMP 3–4
 	wz: rgbColor(0x2b, 0x20, 0x10), // 20% warning over the field
 	hz: rgbColor(0x30, 0x0e, 0x07), // 20% high over the field
+	// USG providers: lit, used (20% over the field) and burn-out mid (50%).
+	codex: rgbColor(0x19, 0xe6, 0xb4), codexUsed: rgbColor(0x05, 0x2e, 0x24), codexMid: rgbColor(0x0d, 0x73, 0x5a),
+	claude: rgbColor(0xff, 0x7a, 0x45), claudeUsed: rgbColor(0x33, 0x18, 0x0e), claudeMid: rgbColor(0x80, 0x3d, 0x22),
+	kimi: rgbColor(0x3d, 0x8b, 0xff), kimiUsed: rgbColor(0x0c, 0x1c, 0x33), kimiMid: rgbColor(0x1f, 0x46, 0x80),
 };
 type Hue = keyof typeof C;
 const PONYTAIL: Record<PonytailState, { code: string; ink: Hue }> = {
@@ -117,7 +130,7 @@ const PLATE: Record<Tone, Style> = {
 const READOUT_CHIP: Record<Tone, Style> = { ...PLATE, ok: { fg: "field", bg: "text", bold: true } };
 const TAG: Record<Tone, string> = { ok: "", warn: "▲ WARN", high: "▲ HIGH", unknown: "? UNKNOWN" };
 const GREY_PLATE: Style = { fg: "text", bg: "plate", bold: true };
-const LABEL = { act: "01 ACT", ctx: "02 CTX", mdl: "03 MDL", ext: "04 EXT" } as const;
+const LABEL = { act: "01 ACT", ctx: "02 CTX", mdl: "03 MDL", usg: "04 USG", ext: "05 EXT" } as const;
 
 const finite = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 const toneOf = (percent: number | undefined): Tone => percent === undefined ? "unknown" : percent > 90 ? "high" : percent > 70 ? "warn" : "ok";
@@ -148,6 +161,64 @@ function contextOf(snapshot: FooterSnapshot) {
 }
 const panelLabels = (percent: number | undefined, windowText: string) =>
 	[percent === undefined ? "" : "%", percent === undefined ? "UNKNOWN" : "USED", windowText ? `of ${windowText}` : ""];
+
+/* ---------- USG: subscription usage windows (values only; no clock, no I/O) ---------- */
+
+const USAGE: Record<UsageProviderId, { tag: string; lit: Hue; used: Hue; mid: Hue }> = {
+	codex: { tag: "CDX", lit: "codex", used: "codexUsed", mid: "codexMid" },
+	claude: { tag: "CLD", lit: "claude", used: "claudeUsed", mid: "claudeMid" },
+	kimi: { tag: "KIM", lit: "kimi", used: "kimiUsed", mid: "kimiMid" },
+};
+const USAGE_WINDOWS = ["5h", "wk"] as const;
+const USAGE_STALE_MS = 15 * 60_000, EDGE_PULSE_MS = 120, BURN_STEPS = [100, 250, 400, 600] as const;
+// Remaining share, clamped for display; null is an unknown window.
+const remainingOf = (window: UsageWindow) => window.usedPercent === null || !Number.isFinite(window.usedPercent) ? null : Math.min(100, Math.max(0, 100 - window.usedPercent));
+// Five squares of 20% each; the epsilon keeps float noise on a boundary (80.0000000001) from lighting another square,
+// but any positive remainder keeps one lit: only exhausted quota is all dim.
+const litOf = (remaining: number) => remaining <= 0 ? 0 : Math.min(5, Math.max(1, Math.ceil(remaining / 20 - 1e-6)));
+// The edge square pulses every 600–4000 ms, faster as its slice drains: at most 1.7 pulses a second.
+function edgePeriod(remaining: number): number | undefined {
+	const lit = litOf(remaining);
+	if (!lit || remaining >= 100) return undefined;
+	return 600 + 3400 * Math.min(1, Math.max(0, (remaining - 20 * (lit - 1)) / 20));
+}
+// Whole minutes, rounded up so a positive span never reads 0m: 41m, 4h03m, 12h, 5d15h, 12d.
+function span(ms: number): string {
+	const m = Math.max(0, Math.ceil(ms / 60_000)), h = Math.floor(m / 60), d = Math.floor(m / 1440);
+	return m < 60 ? `${m}m` : m < 600 ? `${h}h${String(m % 60).padStart(2, "0")}m` : m < 1440 ? `${h}h` : m < 14_400 ? `${d}d${Math.floor((m % 1440) / 60)}h` : `${d}d`;
+}
+const countdown = (resetsAt: number | null, now: number | undefined) =>
+	resetsAt === null || now === undefined || !Number.isFinite(resetsAt) ? "?" : resetsAt <= now ? "reset" : span(resetsAt - now);
+// Age of the last good sample (CodexBar's updatedAt, else receipt) once a fetch failed or it is older than 15 min.
+function staleAge(provider: UsageProviderState, now: number | undefined): string | undefined {
+	if (!provider.data) return undefined;
+	const age = now === undefined ? NaN : now - (finite(provider.data.updatedAt) ?? provider.data.fetchedAt);
+	if (!provider.failure && !(age > USAGE_STALE_MS)) return undefined;
+	return Number.isFinite(age) ? span(Math.max(0, age)) : "?";
+}
+/**
+ * Milliseconds until displayed USG text (a countdown, stale age or the 15-minute stale mark) can next change, or
+ * undefined when nothing on the row depends on time. The adapter repaints then, with or without motion.
+ */
+export function usageRepaintDelay(usage: FooterUsage | undefined): number | undefined {
+	const now = finite(usage?.now);
+	if (!usage || now === undefined) return undefined;
+	let due = Infinity;
+	const minuteStep = (ms: number) => ms - (Math.ceil(ms / 60_000) - 1) * 60_000;
+	for (const provider of usage.providers) {
+		if (!provider.data) continue;
+		for (const key of USAGE_WINDOWS) {
+			const resetsAt = finite(provider.data.windows[key]?.resetsAt);
+			if (resetsAt !== undefined && resetsAt > now) due = Math.min(due, minuteStep(resetsAt - now));
+		}
+		const age = now - (finite(provider.data.updatedAt) ?? provider.data.fetchedAt);
+		if (!Number.isFinite(age)) continue;
+		// Ages round up, so the shown minute changes just after each whole minute, including at one.
+		if (provider.failure || age > USAGE_STALE_MS) due = Math.min(due, age < 0 ? -age : Math.ceil(age / 60_000) * 60_000 - age + 1);
+		else due = Math.min(due, USAGE_STALE_MS - age + 1);
+	}
+	return due === Infinity ? undefined : Math.max(1, Math.ceil(due));
+}
 
 /* ---------- seeded randomness: plans are drawn once per event, never per render ---------- */
 
@@ -269,7 +340,14 @@ export type MotionState = Readonly<{
 	ponytailGuardUntil: number;
 	ponytailBurst?: { at: number; masks: readonly [number, number] };
 	ponytailActive: boolean;
+	/** Per `provider/window`: the sample seen, its lit count (undefined is unknown) and edge-pulse period. */
+	usage: Readonly<Record<string, UsageMemory>>;
+	/** Squares from..to−1 burning out after a newer sample lit fewer squares. */
+	usageBurns: Readonly<Record<string, { at: number; from: number; to: number }>>;
 }>;
+type UsageMemory = Readonly<{ stamp: number; lit?: number; period?: number }>;
+/** USG decoration for one `provider/window`: the edge square's dim pulse and an in-progress burn-out. */
+export type UsageEffect = Readonly<{ dim: boolean; burn?: { from: number; to: number; elapsed: number } }>;
 /** Everything the renderer needs for one decoration frame; values are never part of it. */
 export type FooterFrame = Readonly<{
 	boot: number;
@@ -286,6 +364,8 @@ export type FooterFrame = Readonly<{
 	pulse: number | null;
 	/** Only current mode-letter foregrounds; never plate geometry or semantic text. */
 	ponytailMask?: number;
+	/** Only USG square inks; lit counts, glyph positions and text always come from the snapshot. */
+	usage?: Readonly<Record<string, UsageEffect>>;
 }>;
 export const SETTLED_FRAME: FooterFrame = Object.freeze({ boot: Infinity, bootSeed: 0, cal: 0, tagFlash: false, flash70: false, flash90: false, pulse: null });
 
@@ -300,6 +380,23 @@ function displayedNumeral(s: MotionState, now: number): NumeralGrid {
 	if (!tr || settledNumeral(s, now)) return target;
 	return numeralAt(target, tr.from, Math.max(0, ticksSince(tr.at, now) / (tr.dur / TICK)), tr.seed);
 }
+
+// Decoration memory of the displayed samples; only real successful samples carry a stamp.
+function usageMemory(snapshot: FooterSnapshot): Record<string, UsageMemory> {
+	const memory: Record<string, UsageMemory> = {};
+	for (const provider of snapshot.usage?.providers ?? []) {
+		if (!provider.data) continue;
+		for (const key of USAGE_WINDOWS) {
+			const window = provider.data.windows[key], remaining = window ? remainingOf(window) : null;
+			memory[`${provider.provider}/${key}`] = remaining === null ? { stamp: provider.data.fetchedAt } : { stamp: provider.data.fetchedAt, lit: litOf(remaining), period: edgePeriod(remaining) };
+		}
+	}
+	return memory;
+}
+const sameUsage = (a: Readonly<Record<string, UsageMemory>>, b: Readonly<Record<string, UsageMemory>>) => {
+	const keys = Object.keys(a);
+	return keys.length === Object.keys(b).length && keys.every((key) => b[key] && a[key].stamp === b[key].stamp && a[key].lit === b[key].lit && a[key].period === b[key].period);
+};
 
 /** Starts decoration memory. `boot` plays the install sequence; false resumes settled (motion turned back on). */
 export function startMotion(snapshot: FooterSnapshot, now: number, seed: number, boot: boolean, ponytailGuardUntil = 0): MotionState {
@@ -317,6 +414,7 @@ export function startMotion(snapshot: FooterSnapshot, now: number, seed: number,
 		working: snapshot.activity?.working === true,
 		units: knownCount(snapshot.activity?.units) ?? 0,
 		ponytailActive: ponytailLit(snapshot),
+		usage: usageMemory(snapshot), usageBurns: {},
 	};
 	return { ...state, cursor: r.cursor };
 }
@@ -382,6 +480,20 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 	set("units", knownCount(snapshot.activity?.units) ?? 0);
 	set("ponytailActive", ponytailLit(snapshot));
 
+	// USG burn-out: a newer successful sample that lights fewer squares. First discovery, increases (resets) and
+	// unknown transitions settle; newer data interrupts a running burn and settles to the latest.
+	const usage = usageMemory(snapshot), burns = { ...next.usageBurns };
+	let burned = false;
+	for (const key of Object.keys(burns)) if (now - burns[key].at >= BURN_STEPS[3] || !usage[key]) { delete burns[key]; burned = true; }
+	for (const [key, memory] of Object.entries(usage)) {
+		const previous = state.usage[key];
+		if (!previous || previous.stamp === memory.stamp) continue;
+		if (burns[key]) { delete burns[key]; burned = true; }
+		if (previous.lit !== undefined && memory.lit !== undefined && memory.lit < previous.lit) { burns[key] = { at: now, from: previous.lit, to: memory.lit }; burned = true; }
+	}
+	if (!sameUsage(state.usage, usage)) set("usage", usage);
+	if (burned) set("usageBurns", burns);
+
 	// Start due events; none run during boot. A late timer keeps the planned start when within one tick.
 	if (!booting(next, now)) {
 		const startAt = (due: number) => (now - due < TICK ? due : now);
@@ -440,6 +552,15 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 		const k = event ? ticksSince(event.at, now) : -1;
 		if (event && k >= 0 && k < event.dur) frame[key] = { k, items: event.items };
 	}
+	const usage: Record<string, UsageEffect> = {};
+	for (const [key, memory] of Object.entries(state.usage)) {
+		if (memory.period !== undefined && edgeDim(memory.period, now - state.epoch)) usage[key] = { dim: true };
+	}
+	for (const [key, burn] of Object.entries(state.usageBurns)) {
+		const elapsed = now - burn.at;
+		if (elapsed >= 0 && elapsed < BURN_STEPS[3]) usage[key] = { dim: usage[key]?.dim ?? false, burn: { from: burn.from, to: burn.to, elapsed } };
+	}
+	if (Object.keys(usage).length) frame.usage = usage;
 	return frame;
 }
 
@@ -449,6 +570,8 @@ const lampOn = (pulse: number) => pulse % 16 < 10;
 // cell is well below WCAG's flash-area threshold, so this exceeds the three-a-second budget kept for the mode letters by choice.
 const lightOn = (pulse: number) => pulse % 2 === 0;
 const markSide = (pulse: number, q: number) => Math.floor((pulse + q * 3) / (4 + ((q * 2) % 5))) % 2;
+// A USG edge square dims for the last 120 ms of each period, so a fresh start never opens on a pulse.
+const edgeDim = (period: number, elapsed: number) => elapsed >= 0 && elapsed % period >= period - EDGE_PULSE_MS;
 
 /** Milliseconds until the decoration can next change or an event is due. Call only while motion is on. */
 export function nextMotionDelay(state: MotionState, now: number): number {
@@ -477,6 +600,17 @@ export function nextMotionDelay(state: MotionState, now: number): number {
 			for (let q = 0; q < marks && !moved; q++) moved = markSide(k, q) !== markSide(k - 1, q);
 			if (moved) { due = Math.min(due, state.epoch + k * TICK); break; }
 		}
+	}
+	// USG edge pulses and burn-out steps use exact millisecond boundaries rather than ticks.
+	const elapsed = now - state.epoch;
+	for (const memory of Object.values(state.usage)) {
+		if (memory.period === undefined) continue;
+		const phase = elapsed < 0 ? -1 : elapsed % memory.period;
+		due = Math.min(due, phase < 0 ? state.epoch : now + (phase < memory.period - EDGE_PULSE_MS ? memory.period - EDGE_PULSE_MS : memory.period) - phase);
+	}
+	for (const burn of Object.values(state.usageBurns)) {
+		const step = BURN_STEPS.find((at) => at > now - burn.at);
+		if (step !== undefined) due = Math.min(due, burn.at + step);
 	}
 	// Due glitch, ghost and re-strike starts; none start during boot.
 	if (!inBoot) due = Math.min(due, levelOf(state.percent) ? state.glitchAt : Infinity, state.ghostAt, state.strikeAt);
@@ -788,6 +922,85 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		return fg + bg + restoreBase(safeText(status, true), fg, bg);
 	});
 
+	/* ---------- USG: one group per provider, squares over countdowns, never boot/ambient targets ---------- */
+	// A slot is at least its squares' width and widens for longer text, so the two rows never overlap.
+	type Slot = { top: string; topWidth: number; bottom: string; bottomWidth: number };
+	const slot = (top: string, topWidth: number, bottom = "", bottomWidth = 0): Slot => ({ top, topWidth, bottom, bottomWidth });
+	type UsagePart = { top: string; bottom: string; width: number; blank: boolean };
+	type UsageGroup = UsagePart & { parts: UsagePart[]; alone?: boolean };
+	const joinParts = (parts: UsagePart[]): UsageGroup => ({
+		top: parts.map((p) => p.top).join(gap()), bottom: parts.map((p) => p.bottom).join(gap()),
+		width: parts.reduce((sum, p, i) => sum + p.width + (i ? 1 : 0), 0), blank: parts.every((p) => p.blank), parts,
+	});
+	const usageNow = finite(snapshot.usage?.now);
+	const usageGroups = (snapshot.usage?.providers ?? []).flatMap((provider) => {
+		const look = USAGE[provider.provider];
+		if (!look) return [];
+		const age = staleAge(provider, usageNow), data = provider.data;
+		// Stale dims the tag to the unknown grey: the 50% mixes are under 3.5:1 on black, too faint for text.
+		const slots = [slot(paint(look.tag, age === undefined ? { fg: look.lit, bold: true } : { fg: "graphic" }), 3, paint(age ?? "", { fg: "warn" }), age?.length ?? 0)];
+		if (!data) {
+			const failure = provider.failure;
+			slots.push(failure ? slot(paint("?????", { fg: "graphic" }), 5, paint(failure, { fg: "warn" }), failure.length) : slot(paint("·····", { fg: "graphic" }), 5, paint("pending", { fg: "secondary" }), 7));
+		} else if (!USAGE_WINDOWS.some((key) => data.windows[key])) slots.push(slot(paint("no limits", { fg: "secondary" }), 9));
+		for (const key of data ? USAGE_WINDOWS : []) {
+			const window = data!.windows[key];
+			if (!window) continue; // a window the provider does not report collapses without a gap
+			const remaining = remainingOf(window), effect = frame.usage?.[`${provider.provider}/${key}`];
+			if (remaining === null) { slots.push(slot(paint("?????", { fg: "graphic" }), 5, paint("?", { fg: "secondary" }), 1)); continue; }
+			const lit = litOf(remaining), burn = effect?.burn, text = countdown(window.resetsAt, usageNow);
+			const squares = Array.from({ length: 5 }, (_, i) => {
+				if (i < lit) return paint("■", { fg: effect?.dim && i === lit - 1 ? look.used : look.lit });
+				if (!burn || i >= burn.from) return paint("□", { fg: look.used });
+				const e = burn.elapsed;
+				return paint("■", { fg: e < BURN_STEPS[0] ? "text" : e < BURN_STEPS[1] ? look.lit : e < BURN_STEPS[2] ? look.mid : look.used });
+			}).join("");
+			slots.push(slot(squares, 5, paint(text, { fg: "secondary" }), text.length));
+		}
+		const parts = slots.map((s): UsagePart => {
+			const w = Math.max(s.topWidth, s.bottomWidth);
+			return { top: s.top + paint(" ".repeat(w - s.topWidth)), bottom: s.bottom + paint(" ".repeat(w - s.bottomWidth)), width: w, blank: !s.bottomWidth };
+		});
+		return [joinParts(parts)];
+	});
+	// Below 40 columns a group wider than the line splits between its tag and window slots, and a slot wider still
+	// wraps on its own rows: values are never clipped. Split pieces never share a line with another provider.
+	const splitGroup = (group: UsageGroup, w: number): UsageGroup[] => {
+		if (group.width <= w) return [group];
+		const out: UsageGroup[] = [];
+		let run: UsagePart[] = [];
+		const push = () => { if (run.length) out.push({ ...joinParts(run), alone: true }); run = []; };
+		for (const part of group.parts) {
+			if (run.length && joinParts(run).width + 1 + part.width > w) push();
+			if (part.width <= w) { run.push(part); continue; }
+			push();
+			for (const text of [part.top, part.bottom]) for (const piece of wrap(text, w)) {
+				if (stripTerminalSequences(piece).trim()) out.push({ top: piece, bottom: "", width: visibleWidth(piece), blank: true, parts: [], alone: true });
+			}
+		}
+		push();
+		return out;
+	};
+	// Whole provider groups wrap together with their text row; `first` is the room left on the first line.
+	const usageLines = (groups: UsageGroup[], first: number, rest: number) => {
+		const lines: { top: string; bottom?: string }[] = [];
+		let line: UsageGroup[] = [];
+		const flush = () => {
+			if (!line.length) return;
+			const join = (part: "top" | "bottom") => line.map((group) => group[part]).join(paint("   "));
+			lines.push({ top: join("top"), bottom: line.every((group) => group.blank) ? undefined : join("bottom") });
+			line = [];
+		};
+		for (const group of groups) {
+			const used = line.reduce((sum, g) => sum + g.width + 3, 0);
+			if (line.length && (group.alone || line[0].alone || used + group.width > (lines.length ? rest : first))) flush();
+			line.push(group);
+		}
+		flush();
+		return lines;
+	};
+	const usgPlate = letters(` ${LABEL.usg}`.padEnd(8), GREY_PLATE);
+
 	const { percent, tone, windowText, tokensText } = contextOf(snapshot);
 	const readoutText = `${tokensText}${windowText ? `/${windowText}` : ""}`;
 	const tagText = TAG[tone];
@@ -827,6 +1040,17 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		add(LABEL.ctx, PLATE[tone], chip(readoutText, READOUT_CHIP[tone]) + (tag ? gap() + tag : ""));
 		add(LABEL.mdl, { fg: "field", bg: "text", bold: true }, model);
 		if (ponytailPlate) for (const line of wrap(ponytailPlate, W)) lines.push(serialize(runPad(line, W)));
+		if (usageGroups.length) {
+			// Inline label, then the first group beside it when it fits; text rows stay under their squares.
+			const fitted = usageGroups.flatMap((group) => splitGroup(group, W));
+			const label = paint(` ${LABEL.usg} `, GREY_PLATE) + gap(), inline = fitted[0].width <= W - 9;
+			if (!inline) lines.push(serialize(runPad(label, W)));
+			usageLines(fitted, inline ? W - 9 : W, W).forEach((line, i) => {
+				const lead = inline && i === 0;
+				lines.push(serialize(runPad((lead ? label : "") + line.top, W)));
+				if (line.bottom) lines.push(serialize(runPad((lead ? paint(" ".repeat(9)) : "") + line.bottom, W)));
+			});
+		}
 		statuses.forEach((status, i) => {
 			if (i === 0) add(LABEL.ext, GREY_PLATE, status);
 			else for (const line of wrap(status, W)) lines.push(serialize(runPad(line, W)));
@@ -1030,6 +1254,11 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		body.push(...fieldRows(modelPlate, model, FW, band));
 		if (ponytailPlate) body.push(...fieldRows(undefined, paint(" ".repeat(plateAt), { bg: band }) + ponytailPlate + bandTail, FW, band));
 	}
+	// USG content is pre-styled runs and its plate has no zone, so boot, ghosts and re-strikes never reach it.
+	usageLines(usageGroups, FW, FW).forEach((line, i) => {
+		body.push([...(i === 0 ? usgPlate : blanks(P)), ...blanks(1), ...runPad(line.top, FW, "field", false)]);
+		if (line.bottom) body.push([...blanks(P), ...blanks(1), ...runPad(line.bottom, FW, "field", false)]);
+	});
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
 		body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status, FW));

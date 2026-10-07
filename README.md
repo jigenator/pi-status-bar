@@ -9,15 +9,16 @@ It shows, in a framed Marathon-inspired “Acid / Black” instrument panel with
 - a plain grey `cwd` line above Active naming Pi's working directory, where tools run and project instructions were loaded from, only when it differs from Active;
 - a graduated context gauge with 70%/90% thresholds, an inline context-token readout such as `84k/184k` and, at 100+ columns, a large percentage numeral. All of them measure against the auto-compaction budget, the context window minus Pi's `compaction.reserveTokens` (a `compaction.modelOverrides` entry for the current model wins; the default is 16384), so a full gauge means Pi is about to compact. With `compaction.enabled: false` they measure the full window;
 - the model and thinking level, a white **⌑ PNYTL //** mode plate, plus statuses from other extensions (recognized Ponytail text is represented once by its plate);
-- a **ROOT** working lamp and an independent **AU (Active Units)** badge from the optional public pi-subagents fleet API.
+- a **ROOT** working lamp and an independent **AU (Active Units)** badge from the optional public pi-subagents fleet API;
+- a **USG** row with remaining subscription quota from the optional [CodexBar](https://github.com/steipete/CodexBar) CLI: for Codex (`CDX`), Claude (`CLD`) and Kimi (`KIM`), five squares per 5-hour and weekly window (each lit `■` is 20% left) with the time to reset below, for example `CLD ■■■■■ ■■■■□` over `1h15m 5d15h`.
 
-Full PR URLs and primary-checkout rows are omitted from the footer; validated PR URLs and primary-checkout inspection data are unchanged. Cumulative token totals, cache metrics, and cost are intentionally omitted. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
+Full PR URLs and primary-checkout rows are omitted from the footer; validated PR URLs and primary-checkout inspection data are unchanged. Cumulative token totals, cache metrics, and cost are intentionally omitted; USG shows only remaining quota. Active is display-only: selecting it does not change Pi's cwd, tools, instructions, or loaded resources. The footer uses a fixed palette rather than your Pi theme; Pi converts it for truecolor or 256-color terminals.
 
 The native v9 frame has corners and a standalone calibration cross, without a continuous top rule or ruler ticks. Plates, context squares and ROOT/AU panels animate decoratively; readouts, counts and current digit shapes stay truthful. Run `/footer-motion off` to settle the animation for the current session, `/footer-motion on` to resume it, or `/footer-motion` to toggle. The choice is not saved.
 
 ## Quick start
 
-Prerequisites are Node.js 22.19 or newer and an installed Pi host. Git and the `gh` CLI are optional; missing or unavailable integrations are shown explicitly.
+Prerequisites are Node.js 22.19 or newer and an installed Pi host. Git, the `gh` CLI and the `codexbar` CLI are optional; missing or unavailable Git/GitHub integrations are shown explicitly, and without `codexbar` on PATH the USG row is simply absent.
 
 From this repository, load the package for one Pi invocation without installing it:
 
@@ -32,6 +33,8 @@ The extension gives the agent a `set_active_project({ path })` tool. It should c
 Active is an agent declaration, not automatic cwd tracking, so the footer can be stale if the agent forgets to signal a switch. Paths show only their parent/current directories, so checkouts whose last two directory names match look alike; the `set_active_project` result reports the full Active path. GitHub repository detection is local; PR lookup requires a recognizable public GitHub remote plus a working, authenticated `gh` command. It checks the selected remote repository, not outbound PRs from a fork to an upstream repository. Failures are reported as unavailable rather than as clean or no-PR states.
 
 AU is native active work, **not an exact running-agent count**: pi-subagents includes queued/pending work and counts an active workflow container as one. Known counts show at least two digits (`00 AU`, `03 AU`, `123 AU`); up to six rail marks accompany the exact uncapped total. Without a compatible owner, or on malformed/error/timeout replies, the badge shows `? AU`, never a fabricated zero. The integration was verified against Pi 1.0.2 and pi-subagents 0.76.0; it uses public in-process events, not an imported dependency or status-text parsing. Samples refresh independently of decoration, normally five seconds after the prior collection finishes, with coalesced turn/tool/ready updates. Motion off does not stop collection. ROOT comes from Pi's `isIdle()` independently of AU, including the post-`agent_end` retry/continuation period.
+
+USG requires the CodexBar CLI (`codexbar`, verified against 0.60.3) on PATH with the providers already signed in; it runs only the read-only `codexbar usage --provider <id> --format json --json-only` and never prompts. Codex and Claude fetches take about 20 seconds each, so those providers show `pending` after startup; all three refresh five minutes after each round completes. A failed fetch keeps the last good squares, grey-tagged with their age (`16m`); data older than 15 minutes is marked the same way, and a failure without earlier data shows `?????` with `timeout` or `unavailable`, never CodexBar's raw message. Only 5-hour and weekly windows are shown; other windows are ignored. The edge square of each draining window pulses and lost squares burn out when quota drops; `/footer-motion off` holds them steady, and countdowns keep updating every minute either way. `■`/`□` are ambiguous-width characters: terminals set to render ambiguous characters wide will misalign the row, and live-terminal rendering has not been verified.
 
 CMP counts successful compactions persisted on the currently selected session branch, including ones inherited from earlier on that branch; abandoned sibling branches, branch summaries and failed or cancelled compaction attempts are not counted. It is not a context-usage reading. Unknown is `CMP×??`, never a fabricated zero, and counts above 99 deliberately show `CMP×99+` to keep the plate eight cells wide.
 
@@ -51,7 +54,7 @@ Recognized Ponytail status is represented by the plate instead of duplicated in 
 
 The white plate and black title/slashes stay static. While Ponytail reports the agent is running a turn (its own `●` dot), the `⌑` icon alternates with a small pink `•` light (the CMP pink), 50 ms each (10 blinks a second); `/footer-motion off` holds the light on instead. On a mode change, only the three current mode letters can flash two seeded random subsets black, then recover; no sweep or scrambling. First discovery, OFF/CHK/UNK and motion off settle immediately. Activity-dot changes drive only the light and do not restart mode flashes; resuming motion does not replay off-time changes.
 
-No live interactive-terminal/motion or live fleet-owner smoke test is claimed; automated tests use the installed Pi loader and public bus with offline replies.
+No live interactive-terminal/motion, live CodexBar or live fleet-owner smoke test is claimed; automated tests use the installed Pi loader and public bus with offline replies and a fake `codexbar`.
 
 ## Project guides
 

@@ -27,6 +27,13 @@ const theme = { style: (text: string, options: object) => styleText(text, option
 const shown = (path: string) => `${basename(dirname(path))}/${basename(path)}`;
 const row = (text: string, label: string) => text.split("\n").find((line) => line.includes(label)) ?? "";
 const sleep = (ms: number) => new Promise((done) => setTimeout(done, ms));
+// Captured before any test mocks timers: waits on real subprocesses while adapter timers are mocked.
+const nativeSetTimeout = setTimeout;
+const realSleep = (ms: number) => new Promise((done) => nativeSetTimeout(done, ms));
+async function untilReal(check: () => boolean | Promise<boolean>) {
+	for (let n = 0; n < 400; n++) { if (await check()) return; await realSleep(20); }
+	throw new Error("Timed out waiting for integrated extension");
+}
 async function until(check: () => boolean | Promise<boolean>) {
 	for (let n = 0; n < 200; n++) { if (await check()) return; await sleep(20); }
 	throw new Error("Timed out waiting for integrated extension");
@@ -581,7 +588,7 @@ test("PNYTL parses only bounded exact styled format; preserves malformed/warning
 		h.setStatus("ponytail", raw);
 		assert.equal(ponytailCode(h), "UNK", JSON.stringify(raw));
 		assert.equal(h.statuses.get("ponytail"), raw, "host data untouched");
-		assert.match(h.text(), /04 EXT/);
+		assert.match(h.text(), /05 EXT/);
 		assert.doesNotMatch(h.component.render(300).join(""), /\x1b\[2J|\x1b\]|\u202e/);
 	}
 	// Ponytail's ● activity dot lights the plate (held lit with motion off); ○ restores the icon.
@@ -693,5 +700,146 @@ test("PNYTL observer and directory-first linked-worktree selection preserve both
 		else assert.doesNotMatch(h.text(), /🐴 ponytail:/);
 	}
 	assert.equal(manager.getCwd(), f.launch, "selection remains display-only");
+	assert.deepEqual(h.errors, []);
+});
+
+/* ---------- USG: CodexBar usage through a fake `codexbar` on PATH ---------- */
+
+// Real CodexBar 0.60.3 shapes (identity removed) at a fixed wall clock; the adapter clock is mocked to USG_NOW.
+const USG_NOW = Date.parse("2026-10-07T03:05:00Z");
+const usageSamples: Record<string, unknown> = {
+	codex: [{ provider: "codex", source: "oauth", usage: { primary: null, secondary: { usedPercent: 25, resetsAt: "2026-10-13T05:20:02Z", windowMinutes: 10080 }, tertiary: null, updatedAt: "2026-10-07T03:01:50Z", identity: { providerID: "codex" } } }],
+	claude: [{ provider: "claude", source: "claude", usage: { primary: { usedPercent: 19, resetsAt: "2026-10-07T04:20:00Z", windowMinutes: 300 }, secondary: { usedPercent: 6, resetsAt: "2026-10-12T19:00:00Z", windowMinutes: 10080 }, tertiary: null, updatedAt: "2026-10-07T03:02:07Z", extraRateWindows: [] } }],
+	kimi: [{ provider: "kimi", source: "Kimi Code API key", usage: { secondary: { usedPercent: 0, resetsAt: "2026-10-07T06:13:06Z", windowMinutes: 300 }, primary: { usedPercent: 7.000000000000001, resetsAt: "2026-10-13T15:13:06Z", windowMinutes: 10080 }, tertiary: null, updatedAt: "2026-10-07T03:03:20Z" } }],
+};
+const usageError = (provider: string) => [{ error: { message: "Not logged in. Secret account person@example.invalid", kind: "provider", code: 1 }, provider, source: "auto" }];
+// Deterministic `codexbar`: the n-th call for a provider prints `<provider>.<n>.json` (else `<provider>.json`) after
+// `delay-<provider>.<n>` (else `delay-<provider>`) ms, exits 1 for an error payload, and records SIGTERM.
+async function fakeCodexbar(f: any, files: Record<string, unknown> = usageSamples) {
+	const dir = join(f.root, "codexbar"), log = join(f.root, "codexbar.log"), kills = join(f.root, "codexbar.kills");
+	await mkdir(dir, { recursive: true });
+	const set = (name: string, value: unknown) => writeFile(join(dir, name), typeof value === "string" ? value : JSON.stringify(value));
+	for (const [provider, value] of Object.entries(files)) await set(`${provider}.json`, value);
+	await writeFile(join(f.root, "bin", "codexbar"), `#!${process.execPath}
+const fs=require('node:fs'), path=require('node:path'), args=process.argv.slice(2), p=args[2], dir=${JSON.stringify(dir)};
+const prior=fs.existsSync(${JSON.stringify(log)}) ? fs.readFileSync(${JSON.stringify(log)},'utf8').split('\\n').filter((line)=>line && JSON.parse(line).args[2]===p).length : 0;
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args})+'\\n');
+process.on('SIGTERM',()=>{ fs.appendFileSync(${JSON.stringify(kills)}, p+'\\n'); process.exit(143); });
+const pick=(...names)=>{ for (const name of names) { const file=path.join(dir,name); if (fs.existsSync(file)) return fs.readFileSync(file,'utf8'); } };
+setTimeout(()=>{ const out=pick(p+'.'+prior+'.json', p+'.json') ?? ''; process.stdout.write(out); process.exitCode=out.includes('"error"') ? 1 : 0; }, Number(pick('delay-'+p+'.'+prior, 'delay-'+p) ?? 0));
+`);
+	await chmod(join(f.root, "bin", "codexbar"), 0o755);
+	const lines = async (path: string) => { try { return (await readFile(path, "utf8")).split("\n").filter(Boolean); } catch { return []; } };
+	return { set, calls: async () => (await lines(log)).map((line) => JSON.parse(line).args), kills: () => lines(kills) };
+}
+// Mock only the adapter's timeouts and wall clock; real subprocesses keep running on real time.
+function usageClock(t: any) {
+	t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: USG_NOW });
+	return async (ms: number) => { t.mock.timers.tick(ms); for (let n = 0; n < 16; n++) await Promise.resolve(); };
+}
+const usgRows = (h: any) => { const lines = h.text().split("\n"), i = lines.findIndex((line: string) => line.includes("04 USG")); return i < 0 ? [] : [lines[i], lines[i + 1]]; };
+
+test("USG: missing codexbar (ENOENT) hides the row until a later poll finds it; non-TUI installs no poller", async (t) => {
+	const f = await fixtures(t), advance = usageClock(t);
+	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
+	await h.emitStart(); await h.motion("off");
+	await realSleep(400);
+	assert.doesNotMatch(h.text(), /USG|CDX|CLD|KIM/, "not installed: no row, not a failure state");
+	assert.match(h.text(), /05 EXT/);
+	const codexbar = await fakeCodexbar(f);
+	await advance(5 * 60_000);
+	await untilReal(() => /KIM ■/.test(h.text()) && /CLD ■/.test(h.text()) && /CDX ■/.test(h.text()));
+	// The mocked wall clock moved five minutes: 04:20 is now 1h10m away.
+	const [squares, countdowns] = usgRows(h);
+	assert.match(squares, /^ {3}04 USG {2}CDX ■■■■□ {3}CLD ■■■■■ ■■■■■ {3}KIM ■■■■■ ■■■■■ +$/);
+	assert.match(countdowns, /^\S? +6d2h +1h10m 5d15h +3h04m 6d12h +\S?$/);
+	const lines = h.text().split("\n");
+	assert.ok(lines.findIndex((line: string) => line.includes("03 MDL")) < lines.indexOf(squares) && lines.indexOf(squares) < lines.findIndex((line: string) => line.includes("05 EXT")));
+	assert.deepEqual((await codexbar.calls()).sort(), ["claude", "codex", "kimi"].map((p) => ["usage", "--provider", p, "--format", "json", "--json-only"]));
+	assert.doesNotMatch(h.text(), /person@|identity|oauth/);
+
+	await h.stop();
+	const print = await harness(f, host.SessionManager.inMemory(f.launch), "print"); t.after(() => print.stop());
+	await print.emitStart(); await realSleep(300); await advance(10 * 60_000); await realSleep(200);
+	assert.equal((await codexbar.calls()).length, 3, "non-TUI modes never run codexbar");
+	assert.deepEqual([...h.errors, ...print.errors], []);
+});
+
+test("USG: concurrent first round with pending providers, single-flight 5-minute polls, stale failures and minute repaints with motion off", async (t) => {
+	// Without updatedAt, freshness is measured from receipt, so only a failure can make a provider stale here.
+	const fresh = Object.fromEntries(Object.entries(usageSamples).map(([provider, [item]]: [string, any]) => [provider, [{ ...item, usage: { ...item.usage, updatedAt: undefined } }]]));
+	const f = await fixtures(t), codexbar = await fakeCodexbar(f, fresh), advance = usageClock(t);
+	await codexbar.set("delay-claude.0", 1500);
+	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
+	await h.emitStart(); await h.motion("off");
+	// Kimi and Codex answer first; Claude is still pending, never shown as a failure or zero.
+	await untilReal(() => /KIM ■/.test(h.text()) && /CDX ■/.test(h.text()));
+	let [squares, countdowns] = usgRows(h);
+	assert.match(squares, /CLD ·····/); assert.match(countdowns, /^\S? +6d2h +pending +3h09m 6d12h/);
+	await untilReal(() => /CLD ■/.test(h.text()));
+	assert.equal((await codexbar.calls()).length, 3, "one concurrent call per provider");
+
+	// Countdowns are live: with motion off, a repaint arrives when a displayed minute changes.
+	[, countdowns] = usgRows(h);
+	assert.match(countdowns, / 1h15m /);
+	let renders = h.renders;
+	await advance(60_000);
+	assert.ok(h.renders > renders, "minute repaint runs with motion off");
+	assert.match(usgRows(h)[1], / 1h14m /);
+	renders = h.renders; await advance(1_000); assert.equal(h.renders, renders, "no repaint until the next change");
+
+	// The next round starts 5 minutes after the last completed; a slow call blocks a second round (single flight).
+	await codexbar.set("delay-claude.1", 800);
+	await advance(4 * 60_000);
+	await untilReal(async () => (await codexbar.calls()).length === 6);
+	// Stay under the 60 s deadline (it runs on the mocked clock); past it the call would time out.
+	await advance(50_000); await realSleep(200);
+	assert.equal((await codexbar.calls()).length, 6, "no new round while a call is in flight");
+	await realSleep(900);
+	// Claude's next call fails: the last good windows stay, dimmed with their age, never the raw error.
+	await codexbar.set("claude.2.json", usageError("claude"));
+	await advance(5 * 60_000);
+	await untilReal(async () => (await codexbar.calls()).length === 9);
+	await realSleep(300);
+	[squares, countdowns] = usgRows(h);
+	assert.match(squares, /CLD ■■■■■ ■■■■■/);
+	const under = (tag: string) => countdowns[squares.indexOf(tag)];
+	assert.match(under("CLD"), /\d/, "the failed provider shows its age under its tag");
+	assert.deepEqual([under("CDX"), under("KIM")], [" ", " "], "fresh providers are not marked stale");
+	assert.doesNotMatch(h.text(), /Not logged in|person@|Secret|unavailable/);
+	assert.deepEqual(await codexbar.kills(), []);
+	assert.deepEqual(h.errors, []);
+});
+
+test("USG: shutdown and footer/tree replacement abort in-flight calls, clear timers and never accept stale results", async (t) => {
+	const f = await fixtures(t), codexbar = await fakeCodexbar(f), advance = usageClock(t);
+	// First-round calls are slow and report nearly exhausted windows; later calls are the real samples.
+	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`delay-${provider}.0`, 1500);
+	await codexbar.set("claude.0.json", [{ provider: "claude", usage: { primary: { usedPercent: 99, resetsAt: "2026-10-07T04:20:00Z", windowMinutes: 300 } } }]);
+	const manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager); t.after(() => h.stop());
+	await h.emitStart(); await h.motion("off");
+	await untilReal(async () => (await codexbar.calls()).length === 3);
+	await realSleep(200);
+	// Same-session tree restore replaces the footer: the old round is aborted and its results are discarded.
+	await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
+	await untilReal(async () => (await codexbar.kills()).length === 3);
+	await untilReal(() => /CLD ■■■■■ ■■■■■/.test(h.text()));
+	await realSleep(1600);
+	assert.doesNotMatch(h.text(), /CLD ■□□□□/, "aborted first-round data never renders");
+	assert.equal((await codexbar.calls()).length, 6);
+	// Footer replacement keeps the session's cached data and starts a fresh round.
+	h.replaceFooter();
+	assert.match(h.text(), /CLD ■■■■■ ■■■■■/);
+	await untilReal(async () => (await codexbar.calls()).length === 9); await realSleep(300);
+	// Shutdown aborts in-flight work and clears the poll and minute timers.
+	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`delay-${provider}`, 3000);
+	await advance(5 * 60_000);
+	await untilReal(async () => (await codexbar.calls()).length === 12); await realSleep(200);
+	const renders = h.renders;
+	await h.stop();
+	await untilReal(async () => (await codexbar.kills()).length === 6);
+	await advance(30 * 60_000); await realSleep(300);
+	assert.equal((await codexbar.calls()).length, 12, "no poll after shutdown");
+	assert.equal(h.renders, renders, "no repaint after shutdown");
 	assert.deepEqual(h.errors, []);
 });

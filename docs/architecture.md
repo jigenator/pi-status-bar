@@ -1,7 +1,7 @@
 # Architecture
 
 Status: current integrated system; no proposed runtime modules.
-Evidence: current `src/` and `test/` files, `package.json`, installed Pi 1.0.2 and pi-subagents 0.76.0 public contracts inspected for the native v9 integration on 2026-10-05; CMP compaction collection verified against installed Pi 1.0.4 on 2026-10-06.
+Evidence: current `src/` and `test/` files, `package.json`, installed Pi 1.0.2 and pi-subagents 0.76.0 public contracts inspected for the native v9 integration on 2026-10-05; CMP compaction collection verified against installed Pi 1.0.4 on 2026-10-06; USG built against recorded CodexBar 0.60.3 output and its [CLI documentation](https://github.com/steipete/CodexBar/blob/main/docs/cli.md) on 2026-10-07.
 
 ## System and module map
 
@@ -9,11 +9,13 @@ Evidence: current `src/` and `test/` files, `package.json`, installed Pi 1.0.2 a
 flowchart LR
   Host[Pi host] -->|loads package entry and emits lifecycle events| Extension[src/extension.ts]
   Extension -->|calls path, Git and PR contract| Workspace[src/workspace.ts]
+  Extension -->|calls usage-window contract| Usage[src/usage.ts]
   Extension -->|passes snapshots for pure rendering| Footer[src/footer.ts]
   Host -->|context, model, thinking, isIdle, session branch and extension statuses| Extension
   Extension <-->|public ping/status RPC, outside render| Fleet[Optional pi-subagents owner]
   Workspace -->|read-only filesystem and execFile| Local[Filesystem and Git]
   Workspace -->|bounded read-only gh api| GitHub[GitHub via gh]
+  Usage -->|bounded read-only execFile| CodexBar[CodexBar CLI]
   Footer -->|color conversion and width utilities| TUI[Pi TUI]
   Extension -->|installs footer and registers tool| Host
 ```
@@ -23,12 +25,14 @@ flowchart LR
 | `package.json` | Pi package metadata and test wiring | `pi.extensions[0]` → `src/extension.ts` | Host-provided peer packages |
 | `src/extension.ts` | Pi adapter: tool, motion command, session state, restoration, compaction count, refresh/cache, cancellation, footer and animation lifecycle | Default extension factory | Public Pi/TypeBox APIs, workspace functions, footer renderer |
 | `src/workspace.ts` | Path normalization and truthful local Git/GitHub/PR inspection | `resolveActivePath`, `inspectWorkspace`, `inspectPullRequest` and result types | Node filesystem/path/child-process only |
-| `src/footer.ts` | Pure, fixed-palette, width-safe, terminal-safe rendering and time-to-decoration frames | `renderFooter`, `safeText`, `FooterSnapshot`, motion functions | Node path helpers, Pi types/TUI color and width helpers, workspace types only |
+| `src/usage.ts` | Explicit provider list, read-only CodexBar invocation and parsing into a discriminated usage-window result | `USAGE_PROVIDERS`, `fetchUsage` and result types | Node child-process only |
+| `src/footer.ts` | Pure, fixed-palette, width-safe, terminal-safe rendering and time-to-decoration frames | `renderFooter`, `safeText`, `FooterSnapshot`, motion functions, `usageRepaintDelay` | Node path helpers, Pi types/TUI color and width helpers, workspace and usage types only |
 | `test/workspace.test.ts` | Domain/contract coverage | Node test file | Disposable Git repositories and fake executables |
+| `test/usage.test.ts` | CodexBar contract coverage | Node test file | Fake `codexbar` executables on PATH |
 | `test/footer.test.ts` | Renderer coverage | Node test file | Installed host TUI through Jiti |
-| `test/extension.test.ts` | Package/host/lifecycle integration | Node test file | Real installed Pi loader/runtime, disposable fixtures, fake `gh` |
+| `test/extension.test.ts` | Package/host/lifecycle integration | Node test file | Real installed Pi loader/runtime, disposable fixtures, fake `gh` and `codexbar` |
 
-The reusable domain module never depends on UI/process-exit/session state. The adapter supplies the home directory in `FooterSnapshot` for display abbreviation and the current time as a decoration frame; the renderer never reads the environment or a clock and performs no I/O. The Pi adapter owns all orchestration and does not duplicate Git/PR parsing or presentation rules.
+The reusable domain modules never depend on UI/process-exit/session state. The adapter supplies the home directory in `FooterSnapshot` for display abbreviation, the wall-clock time for USG countdowns, and the monotonic time as a decoration frame; the renderer never reads the environment or a clock and performs no I/O. The Pi adapter owns all orchestration and does not duplicate Git/PR parsing or presentation rules.
 
 ## Representative flows
 
@@ -92,6 +96,14 @@ Each UI object has one reusable narrow tap in a WeakMap, with one active observe
 
 Sources inspected read-only: Pi 1.0.4 `dist/core/extensions/runner.js`, `dist/core/footer-data-provider.js`, `dist/core/agent-session.js`, `dist/modes/interactive/interactive-mode.js`, public extension types/docs; Ponytail 4.13.0 `pi-extension/index.js` and `hooks/ponytail-config.js`. The portable suite uses synthetic producer fixtures with the real Pi loader/runner. A separate explicit-prerequisite, no-install supplemental check exercised the actual installed Ponytail producer with isolated UI/sessions/config, including startup/load order, commands, legacy restore, hidden output, default versus current, and disposal. No live settings/install/reload occurred.
 
+### USG usage polling
+
+`src/usage.ts` owns the provider list (`codex`, `claude`, `kimi`, in display order) and runs `codexbar usage --provider <id> --format json --json-only` through `execFile`: explicit argv, no shell, `NO_COLOR=1`, a 60-second deadline, a 1 MiB output cap and an AbortSignal. The deadline and abort are handled manually rather than through execFile options: they settle the result at once, send SIGTERM only to a child that actually started (so CodexBar can stop its own provider work) and escalate to SIGKILL if it is still running five seconds later, so a stuck child never holds up a round. CodexBar documents this command as read-only; `--json-only` turns errors into JSON. The result union is `usage` (windows and `updatedAt`), `unavailable` (`timeout`, `cancelled` or `failed`) or `not-installed` (ENOENT). Any non-zero exit is `failed`: CodexBar exits 1 with an error payload whose message is untrusted and may name the account, so it is not parsed into state. A successful payload must be a one-element array for the requested provider. Windows are identified by `windowMinutes` rather than position (Kimi reports the week as primary, Codex has no primary): 300 is `5h`, 10080 is `wk`, other lengths and `extraRateWindows` are ignored, and the first of a duplicated length wins. Only finite `usedPercent` (else null, an unknown window), ISO `resetsAt` and `updatedAt` instants (else null) are kept; identity, email, credits, pace, source and descriptions are never copied.
+
+The adapter runs the collector only with an installed TUI footer, like the fleet collector. Each footer starts a round that fetches all three providers concurrently, one call per provider in flight, and arms one unref'd five-minute timeout after the round completes. Results are applied only when the collector, session and session ID still own them and the call was not aborted; disposal (footer replacement, tree restore, new session, shutdown) aborts every in-flight call and clears the timer. `SessionState.usage` caches `installed` and per-provider state across same-session restores, like the PR cache: a success replaces the provider's sample (stamped with receipt time), a failure keeps the last good sample and records `timeout` or `unavailable`, and ENOENT marks CodexBar not installed and clears the cache; the next round retries, so installing CodexBar later shows the row. `installed` stays unknown until the first call resolves, and only `true` supplies `FooterSnapshot.usage`.
+
+Render reads only that cache plus `Date.now()` as `usage.now`. The renderer derives squares, countdowns and staleness, and `usageRepaintDelay` reports when displayed USG text can next change (a countdown minute, a stale age or the 15-minute stale mark). The adapter arms one unref'd repaint timeout for that moment from each render, independent of motion, and clears it on disposal. Decoration memory records each window's sample stamp, lit count and edge period; a newer stamp with fewer lit squares starts a burn-out. Wakes for edge pulses and burn steps come from `nextMotionDelay`; they never fetch.
+
 ### CMP compaction count
 
 `FooterSnapshot.compactions` is the number of `type: "compaction"` entries on `ctx.sessionManager.getBranch()`: successful compactions persisted on the selected branch, including ones inherited from before a branch point. Abandoned siblings (other `getEntries()` paths), `branch_summary` entries, context projections and token drops are not counted. Pi appends nothing for failed or cancelled attempts (`session_compact_failed`), so they cannot raise the count.
@@ -108,7 +120,7 @@ Invalid paths, resolution failures, cancellation, or session replacement throw w
 
 ## Data and contracts
 
-`SessionState` in `src/extension.ts` is authoritative only for the live session: Launch, Active, selection generation, latest workspace/PR snapshots, PR cache, controllers, refresh timer, render callback, motion flag, footer animation, optional fleet collector/PNYTL observer, nullable AU sample, PNYTL clear evidence/display state and branch compaction count. It is recreated on session start/tree events and disposed on shutdown. A same-session tree restore retains its PR cache and motion choice; a new session receives a new cache, motion on, and Active at Launch.
+`SessionState` in `src/extension.ts` is authoritative only for the live session: Launch, Active, selection generation, latest workspace/PR snapshots, PR cache, controllers, refresh timer, render callback, motion flag, footer animation, optional fleet collector/PNYTL observer, nullable AU sample, PNYTL clear evidence/display state, branch compaction count, and the CodexBar collector, usage cache and USG repaint timer. It is recreated on session start/tree events and disposed on shutdown. A same-session tree restore retains its PR cache and motion choice; a new session receives a new cache, motion on, and Active at Launch.
 
 Durable selection data lives only in successful `set_active_project` tool-result details on the selected Pi session branch. Restoration scans that branch, so abandoned history does not leak into navigation. The compaction count is derived from Pi's own branch entries and is never written by this extension. There is no project/global settings write or cross-session database.
 
@@ -117,6 +129,7 @@ The workspace contract uses discriminated unions:
 - Git: `none`, `unknown`, or `repository` with active/optional primary checkout.
 - GitHub: validated `repository`, explicit `none`, or `unknown`.
 - PR: validated `open`, successful `none`, `unavailable`, or `not-applicable`.
+- Usage: `usage` with only the windows CodexBar reported (each with a nullable used percent and reset time), `unavailable` with a fixed reason, or `not-installed`. An absent window is unreported; a null percentage is unknown, never full or empty.
 
 `dirty: null`, missing revision, detached branch, and unavailable primary checkout each have distinct meanings. `branch: null` is reserved for confirmed detached HEAD (`symbolic-ref` exit 1); a failed active-branch lookup makes Git and PR unavailable, while a failed primary-branch lookup makes only the primary-checkout information in workspace inspection data unavailable. GitHub API output is accepted only when repository identities, head branch, URL, state, count, and page bounds validate.
 
@@ -127,7 +140,9 @@ The workspace contract uses discriminated unions:
 | Launch remains the original session launch path; Active is display-only | `restore` and tool handler in `src/extension.ts` | Display-only and restoration tests in `test/extension.test.ts` |
 | The primary checkout belongs to Active's repository and is not inferred from Launch | `inspectWorkspace` in `src/workspace.ts` | Linked/missing/replaced-main tests |
 | External errors never become clean/no-PR and raw stderr is not exposed | `command`, `checkout`, `inspectPullRequest` | Failure/redaction tests plus renderer state tests |
-| Rendering performs no I/O and every line fits width | `renderFooter` in `src/footer.ts` | Widths 1–160 in every state/motion frame and pure snapshot tests |
+| Rendering performs no I/O and every line fits width | `renderFooter` in `src/footer.ts` | Widths 1–160 (USG and PNYTL 1–280) in every state/motion frame and pure snapshot tests |
+| USG never shows unknown or failed usage as success; raw CodexBar messages and account fields never reach state | `fetchUsage` in `src/usage.ts`, USG rendering in `src/footer.ts` | `test/usage.test.ts` whitelist/failure tests and renderer state tests |
+| CodexBar runs only from the TUI collector, never per render; disposal aborts it and clears its timers | `collectUsage` and `scheduleUsageRepaint` in `src/extension.ts` | USG integration tests with a fake `codexbar` |
 | CMP counts only persisted compactions on the selected branch, recounted on lifecycle events and never per render | `countCompactions` and `recount` in `src/extension.ts` | CMP integration test: abandoned sibling, branch summary, failures, duplicates, boundary drafts, restoration, shutdown, no render walk |
 | Decoration never changes or delays displayed data and never starts collection | motion functions in `src/footer.ts`, animation and independent collector in `src/extension.ts` | Frame-equality, schedule, command, timer-disposal and no-extra-I/O tests |
 | Untrusted terminal text cannot inject controls; other statuses keep SGR styles | `safeText` in `src/footer.ts` | Hostile-control renderer test |
@@ -151,9 +166,10 @@ A new footer-only presentation state belongs in `src/footer.ts` and must use a s
 - Public GitHub URL forms are supported; GitHub Enterprise/arbitrary SSH aliases and outbound fork-to-upstream discovery are not inferred. Add them only from explicit requirements with unambiguous identity rules.
 - Local Git reads form a non-atomic snapshot during concurrent repository changes. A full transaction is not available; failures remain visible.
 - Active can be stale when the agent omits the explicit signal. This is a product trade-off, not an automatic-tracking implementation bug.
-- Static typecheck/lint/build/CI, live authenticated GitHub, live fleet-owner activity, Windows, and manual interactive-terminal/motion validation are not established. See the adoption gaps in `docs/conventions.md`.
+- USG depends on CodexBar's JSON shape (verified against 0.60.3 samples) and treats a provider without 5H/WK windows as `no limits`. Codex and Claude fetches take about 20 seconds; the five-minute poll is not tuned from measurements. A new provider means a new entry in `USAGE_PROVIDERS` plus a renderer tag/palette entry, not a registry.
+- Static typecheck/lint/build/CI, live authenticated GitHub, live CodexBar, live fleet-owner activity, Windows, and manual interactive-terminal/motion validation are not established. See the adoption gaps in `docs/conventions.md`.
 
-The diagrams use standard Mermaid flowchart/sequence syntax. The pre-v9 diagrams rendered without warnings in Pi's installed `grok-mermaid` 0.2.3 on 2026-10-04. The added optional-fleet edge has not been separately rendered; no current diagram-rendering gate is claimed.
+The diagrams use standard Mermaid flowchart/sequence syntax. The pre-v9 diagrams rendered without warnings in Pi's installed `grok-mermaid` 0.2.3 on 2026-10-04. The added optional-fleet and USG edges have not been separately rendered; no current diagram-rendering gate is claimed.
 
 ## Technical decisions
 

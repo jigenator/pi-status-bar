@@ -4,8 +4,10 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { advanceMotion, motionFrame, nextMotionDelay, renderFooter, safeText, startMotion } from "./footer.ts";
-import type { FooterSnapshot, MotionState, PonytailMode, PonytailState } from "./footer.ts";
+import { advanceMotion, motionFrame, nextMotionDelay, renderFooter, safeText, startMotion, usageRepaintDelay } from "./footer.ts";
+import type { FooterSnapshot, MotionState, PonytailMode, PonytailState, UsageProviderState } from "./footer.ts";
+import { USAGE_PROVIDERS, fetchUsage } from "./usage.ts";
+import type { UsageProviderId, UsageResult } from "./usage.ts";
 import { inspectPullRequest, inspectWorkspace, resolveActivePath } from "./workspace.ts";
 import type { PullRequestInfo, WorkspaceInfo } from "./workspace.ts";
 
@@ -14,6 +16,7 @@ const PR_TTL_MS = 60_000;
 const ACTIVITY_REFRESH_MS = 5_000;
 const ACTIVITY_MIN_MS = 1_000;
 const RPC_TIMEOUT_MS = 2_000;
+const USAGE_REFRESH_MS = 5 * 60_000;
 const RPC_REQUEST = "subagents:rpc:v1:request";
 const RPC_READY = "subagents:rpc:v1:ready";
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -49,6 +52,8 @@ type Selection = { version: 1; path: string };
 // Decoration only: owned by one installed TUI footer and never triggers inspection.
 type Animation = { state: MotionState; timer?: ReturnType<typeof setTimeout>; due?: number; schedule(now: number): void; resume(): void };
 type ActivityCollector = { refresh(): void; dispose(): void };
+// `installed` stays undefined until a CodexBar call resolves; only true shows the USG row.
+type UsageCache = { installed?: boolean; providers: Map<UsageProviderId, UsageProviderState> };
 type SessionState = {
 	ctx: ExtensionContext;
 	id: string;
@@ -56,6 +61,10 @@ type SessionState = {
 	units: number | null;
 	compactions: number;
 	activity?: ActivityCollector;
+	usage: UsageCache;
+	usageCollector?: { dispose(): void };
+	usageTimer?: ReturnType<typeof setTimeout>;
+	usageDue?: number;
 	ponytail: PonytailState;
 	ponytailObserver?: PonytailObserver;
 	ponytailClearUI?: ExtensionContext["ui"];
@@ -85,6 +94,10 @@ export default function (pi: ExtensionAPI) {
 		s.disposed = true;
 		s.activity?.dispose();
 		s.activity = undefined;
+		s.usageCollector?.dispose();
+		s.usageCollector = undefined;
+		if (s.usageTimer) clearTimeout(s.usageTimer);
+		s.usageTimer = s.usageDue = undefined;
 		s.ponytailObserver?.dispose();
 		s.ponytailObserver = undefined;
 		if (s.timer) clearInterval(s.timer);
@@ -175,6 +188,64 @@ export default function (pi: ExtensionAPI) {
 			cancelReply?.(); unsubscribeReady();
 		} };
 	}
+
+	// Read-only CodexBar polling, outside render: every provider at start, then 5 min after
+	// each round completes. One call per provider in flight; disposal aborts them all.
+	function collectUsage(s: SessionState): { dispose(): void } {
+		let live = true, timer: ReturnType<typeof setTimeout> | undefined;
+		const controllers = new Map<UsageProviderId, AbortController>();
+		const owned = () => live && current(s) && s.ctx.sessionManager.getSessionId() === s.id;
+		const fetchOne = async (provider: UsageProviderId) => {
+			if (controllers.has(provider)) return;
+			const controller = new AbortController();
+			controllers.set(provider, controller);
+			let result: UsageResult;
+			try { result = await fetchUsage(provider, { signal: controller.signal }); }
+			catch { result = { kind: "unavailable", reason: "failed" }; }
+			finally { if (controllers.get(provider) === controller) controllers.delete(provider); }
+			if (!owned() || controller.signal.aborted) return;
+			if (result.kind === "not-installed") {
+				// Hide the row; a later round retries, so installing CodexBar shows it again.
+				s.usage.installed = false;
+				s.usage.providers.clear();
+			} else {
+				s.usage.installed = true;
+				// A failure keeps the last good sample, which the renderer then marks stale.
+				s.usage.providers.set(provider, result.kind === "usage"
+					? { provider, data: { windows: result.windows, updatedAt: result.updatedAt, fetchedAt: Date.now() } }
+					: { provider, data: s.usage.providers.get(provider)?.data, failure: result.reason === "timeout" ? "timeout" : "unavailable" });
+			}
+			s.requestRender?.();
+		};
+		const round = async () => {
+			timer = undefined;
+			if (!owned()) return;
+			await Promise.all(USAGE_PROVIDERS.map(fetchOne));
+			if (!owned()) return;
+			timer = setTimeout(() => { void round(); }, USAGE_REFRESH_MS);
+			timer.unref();
+		};
+		void round();
+		return { dispose() {
+			live = false;
+			if (timer) clearTimeout(timer);
+			for (const controller of controllers.values()) controller.abort();
+			controllers.clear();
+		} };
+	}
+	// Countdowns are live values: repaint when one can change, with or without motion.
+	const scheduleUsageRepaint = (s: SessionState, delay: number | undefined) => {
+		if (delay === undefined || !current(s)) return;
+		const now = performance.now(), due = now + delay + 20;
+		if (s.usageTimer && s.usageDue! <= due) return;
+		if (s.usageTimer) clearTimeout(s.usageTimer);
+		s.usageDue = due;
+		s.usageTimer = setTimeout(() => {
+			s.usageTimer = s.usageDue = undefined;
+			if (current(s)) s.requestRender?.();
+		}, due - now);
+		s.usageTimer.unref();
+	};
 
 	// Pi 1.0.4 shares ctx.ui across extension handlers. There is no public status
 	// subscription; observe ONLY the named status while forwarding every call.
@@ -301,6 +372,7 @@ export default function (pi: ExtensionAPI) {
 		const id = ctx.sessionManager.getSessionId();
 		const prCache = session?.id === id ? session.prCache : new Map<string, { at: number; value: PullRequestInfo }>();
 		const motion = session?.id === id ? session.motion : true;
+		const usage: UsageCache = session?.id === id ? session.usage : { providers: new Map() };
 		if (session) stopWork(session);
 		const launch = ctx.sessionManager.getHeader()?.cwd ?? ctx.sessionManager.getCwd();
 		let active = launch;
@@ -311,7 +383,7 @@ export default function (pi: ExtensionAPI) {
 			const data = entry.message.details as Partial<Selection> | undefined;
 			if (data?.version === 1 && typeof data.path === "string" && isAbsolute(data.path)) active = data.path;
 		}
-		const s: SessionState = { ctx, id, disposed: false, units: null, ponytail: "checking", compactions: countCompactions(ctx), launch, active, selection: 0, pr: { kind: "unavailable", reason: "lookup pending" }, prCache, refreshPending: false, motion };
+		const s: SessionState = { ctx, id, disposed: false, units: null, ponytail: "checking", compactions: countCompactions(ctx), launch, active, selection: 0, pr: { kind: "unavailable", reason: "lookup pending" }, prCache, refreshPending: false, motion, usage };
 		session = s;
 		if (ctx.mode === "tui") {
 			ctx.ui.setFooter((tui, theme, footerData) => {
@@ -328,6 +400,7 @@ export default function (pi: ExtensionAPI) {
 						contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(),
 						statuses: ponytail.statuses, activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions, ponytail: ponytail.mode, ponytailActive: ponytail.active,
 						compactionReserve: compactionReserve(pi.getSettings(), s.ctx.model),
+						usage: s.usage.installed ? { now: Date.now(), providers: USAGE_PROVIDERS.map((provider) => s.usage.providers.get(provider) ?? { provider }) } : undefined,
 					};
 				};
 				s.units = null;
@@ -362,6 +435,7 @@ export default function (pi: ExtensionAPI) {
 				s.animation = animation;
 				animation.schedule(performance.now());
 				s.activity = collectActivity(s);
+				s.usageCollector = collectUsage(s);
 				s.timer = setInterval(() => { void refreshLocal(s); }, LOCAL_REFRESH_MS);
 				s.timer.unref();
 				void refreshLocal(s);
@@ -370,6 +444,7 @@ export default function (pi: ExtensionAPI) {
 					render(width) {
 						if (!current(s) || s.animation !== animation) return [];
 						latest = snapshot();
+						scheduleUsageRepaint(s, usageRepaintDelay(latest.usage));
 						const now = performance.now();
 						if (s.motion) {
 							animation.state = advanceMotion(animation.state, latest, now);

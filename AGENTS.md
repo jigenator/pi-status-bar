@@ -4,7 +4,7 @@ Purpose: maintain a truthful, display-only Pi footer for sessions that move acro
 
 ## Critical engineering rules
 
-- Never represent unavailable Git or GitHub data as clean or absent; preserve the discriminated results in `src/workspace.ts`. Full rule: [conventions — types and validation](docs/conventions.md#types-and-validation). Check: `test/workspace.test.ts`.
+- Never represent unavailable Git or GitHub data as clean or absent; preserve the discriminated results in `src/workspace.ts`. Usage windows likewise keep pending, failed, stale and unknown distinct from real quota (`src/usage.ts`). Full rule: [conventions — types and validation](docs/conventions.md#types-and-validation). Check: `test/workspace.test.ts` and `test/usage.test.ts`.
 - Active is agent-reported display state only. Do not change cwd, wrap tools, reload instructions/resources, or infer switches from incidental reads. Rationale: [agent-reported active workspace](docs/decisions/agent-reported-active-workspace.md). Check: `test/extension.test.ts`.
 - Keep local/remote I/O out of render, sanitize untrusted terminal content, retain extension status information (recognized `ponytail` goes to PNYTL; unknown text stays in EXT), and bound every rendered line. Decoration motion only repaints; displayed values are always current. Full flow: [architecture](docs/architecture.md). Check: `test/footer.test.ts` and `test/extension.test.ts`.
 - Do not install dependencies to run this repository. Pi provides declared peer packages; use the existing host prerequisite and commands in [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -25,6 +25,7 @@ Start here and scan the supporting-documents map. Read every document whose `Rea
 | Change | Start here | Relevant boundary |
 | --- | --- | --- |
 | Path, Git, worktree, remote, or PR semantics | `src/workspace.ts` | Node standard library only; no Pi UI/session state |
+| CodexBar invocation, provider list, or usage-window parsing | `src/usage.ts` | Node standard library only; no Pi UI/session state |
 | Footer content, sanitization, wrapping, palette, or motion frames | `src/footer.ts` | Pure snapshot-and-frame-to-lines rendering; I/O and clocks forbidden |
 | Tool/command registration, persistence, polling, cache, animation timer, or lifecycle | `src/extension.ts` | Use public Pi APIs; guard stale work and dispose resources |
 | Regression coverage | Matching file in `test/` | Isolated fixtures; real installed loader only at integration boundary |

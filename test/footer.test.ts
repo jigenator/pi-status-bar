@@ -3,14 +3,14 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import type { FooterFrame, FooterSnapshot, MotionState } from "../src/footer.ts";
+import type { FooterFrame, FooterSnapshot, FooterUsage, MotionState, UsageProviderState } from "../src/footer.ts";
 
 // Tests use the installed host, never a vendored width implementation or install.
 const require = createRequire(process.env.PI_HOST_ROOT ? resolve(process.env.PI_HOST_ROOT, "package.json") : import.meta.url);
 const { createJiti } = require("jiti");
 const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false, alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui") } });
 const footer = await jiti.import(resolve("src/footer.ts"));
-const { renderFooter, safeText, startMotion, advanceMotion, motionFrame, nextMotionDelay, SETTLED_FRAME, MOTION_TICK_MS } = footer;
+const { renderFooter, safeText, startMotion, advanceMotion, motionFrame, nextMotionDelay, usageRepaintDelay, SETTLED_FRAME, MOTION_TICK_MS } = footer;
 const { visibleWidth, stripTerminalSequences, sliceByColumn, styleText } = await import(pathToFileURL(require.resolve("@earendil-works/pi-tui")).href);
 // Same concrete-color conversion Pi's Theme.style uses; no semantic theme tokens are consulted.
 const hostTheme = (mode = "truecolor") => ({ style: (text: string, options: object) => styleText(text, options, mode), getColorMode: () => mode });
@@ -62,6 +62,8 @@ const repository = (f: FooterSnapshot) => {
 const PALETTE: Record<string, string> = {
 	"#000000": "field", "#c0fe04": "primary", "#ffffff": "text", "#cfcfcf": "secondary", "#555555": "plate", "#1c1c1c": "surface",
 	"#d79e52": "warn", "#f24723": "high", "#717171": "graphic", "#2b2010": "wz", "#300e07": "hz", "#5200ff": "violet", "#ff15bd": "pink",
+	"#19e6b4": "codex", "#052e24": "codexUsed", "#0d735a": "codexMid", "#ff7a45": "claude", "#33180e": "claudeUsed", "#803d22": "claudeMid",
+	"#3d8bff": "kimi", "#0c1c33": "kimiUsed", "#1f4680": "kimiMid",
 };
 const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";");
 const bg = (hex: string) => `\x1b[48;2;${rgb(hex)}m`, fg = (hex: string) => `\x1b[38;2;${rgb(hex)}m`;
@@ -123,7 +125,7 @@ test("wide v9 snapshot: numbered 8-cell plates, inline readout, scale, numeral a
 		"   02 CTX   114k/272k ███████████████                ┃           ┃                            ▐ ▀▀█  █    █▀█ USED      ",
 		"           0     10    20    30    40    50    60    70    80    90   100                     ▐   ▀ ▀▀▀ ▀ ▀▀▀ of 272k   ",
 		"┃  03 MDL  openai-codex/gpt-6-astra · thinking xhigh                                                                   ┃",
-		"┗━ 04 EXT  tatsu-cli: current | agent-workspace: update available (3)                                                 ━┛",
+		"┗━ 05 EXT  tatsu-cli: current | agent-workspace: update available (3)                                                 ━┛",
 	]);
 	const g = grid(lines);
 	for (const line of lines) assert.ok(line.includes(bg("#000000")), "every row sits on the black field");
@@ -292,7 +294,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 		"   02 CTX   32k/128k ███                     ┃         ┃                  ▐ █▀▀ ▀▀█   █ █ USED      ",
 		"           0                       50        70        90  100            ▐ ▀▀▀ ▀▀▀ ▀ ▀▀▀ of 128k   ",
 		"   03 MDL  provider/model · thinking high                                                           ",
-		"┃  04 EXT  Other status                                                                            ┃",
+		"┃  05 EXT  Other status                                                                            ┃",
 		"┗━         Ponytail: ready                                                                        ━┛",
 	]);
 	f.pullRequest = { kind: "none" };
@@ -303,7 +305,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 		"   02 CTX   32k/128k ██                    ┃         ┃                  ",
 		"           0                      50       70        90  100            ",
 		"   03 MDL  provider/model · thinking high                               ",
-		"┃  04 EXT  Other status                                                ┃",
+		"┃  05 EXT  Other status                                                ┃",
 		"┗━         Ponytail: ready                                            ━┛",
 	]);
 	f.pullRequest = { kind: "open", number: 42, url: "https://github.com/owner/repo/pull/42" };
@@ -315,7 +317,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 		"  02 CTX   32k/128k        ┃    ┃               ",
 		"          0           50   70     100           ",
 		"  03 MDL  provider/model · thinking high        ",
-		"┃ 04 EXT  Other status                         ┃",
+		"┃ 05 EXT  Other status                         ┃",
 		"┗         Ponytail: ready                      ┛",
 	]);
 	// Below the framed minimum, plates become inline labels and values wrap beneath them.
@@ -327,7 +329,7 @@ test("responsive compact, narrow and minimal layouts keep every field and the ac
 		" 02 CTX   32k/128k            ",
 		" 03 MDL  provider/model ·     ",
 		"thinking high                 ",
-		" 04 EXT  Other status         ",
+		" 05 EXT  Other status         ",
 		"Ponytail: ready               ",
 	]);
 	// Tight space drops the unit marks first; the exact count always survives.
@@ -1213,7 +1215,7 @@ test("PNYTL layout: on the numeral's digit column (else right-aligned), model ro
 			assert.ok(joined.includes(`⌑PNYTL//${ponytailCodes[ponytailStates.indexOf(ponytail)]}`), `${width}: indicator lost`);
 			assert.ok(joined.includes("Ponytail:ready") && joined.includes("status-".repeat(15)), `${width}: EXT lost`);
 			if (width >= 40) {
-				const mdl = out.findIndex((line: string) => line.includes("03 MDL")), pnytl = out.findIndex((line: string) => line.includes("PNYTL")), ext = out.findIndex((line: string) => line.includes("04 EXT"));
+				const mdl = out.findIndex((line: string) => line.includes("03 MDL")), pnytl = out.findIndex((line: string) => line.includes("PNYTL")), ext = out.findIndex((line: string) => line.includes("05 EXT"));
 				assert.ok(pnytl >= mdl && pnytl < ext);
 				// Beside the numeral the white body starts on the digits' first column (spine + 2); otherwise it right-aligns.
 				const G = width >= 60 ? 2 : 1, column = (line: string, ch: string) => visibleWidth(line.slice(0, line.indexOf(ch)));
@@ -1241,7 +1243,7 @@ test("PNYTL layout: on the numeral's digit column (else right-aligned), model ro
 	const f = { ...session(), ponytail: "full" as const, statuses: new Map() };
 	for (const width of [30, 48, 100, 120, 280]) {
 		const out = rows(f, width).join("\n");
-		assert.match(out, /PNYTL \/\/ FUL/); assert.doesNotMatch(out, /04 EXT/);
+		assert.match(out, /PNYTL \/\/ FUL/); assert.doesNotMatch(out, /05 EXT/);
 		if (width >= 40) assert.match(out.split("\n").at(-1)!, /┛$/);
 	}
 });
@@ -1389,4 +1391,268 @@ test("linked-worktree footer (branch-only or directory first) and PNYTL coexist 
 	assert.ok(state.ponytailBurst, "real mode transition remains active with the retained plate anchor fix");
 	const frames = [...eventFrames(after), ...[1000, 1100, 1200, 1350, 1450].map((now) => motionFrame(state, now))];
 	for (let width = 3; width <= 160; width++) for (const frame of frames) for (const snapshot of [after, { ...unnamed, ponytail: "full" as const }]) check(snapshot, width, frame);
+});
+
+/* ---------- USG: subscription usage windows ---------- */
+
+// The real CodexBar samples at a fixed wall-clock `now`, as the adapter caches them.
+const NOW = Date.parse("2026-10-07T03:05:00Z"), iso = (value: string) => Date.parse(value);
+const samples = (): UsageProviderState[] => [
+	{ provider: "codex", data: { windows: { wk: { usedPercent: 25, resetsAt: iso("2026-10-13T05:20:02Z") } }, updatedAt: iso("2026-10-07T03:01:50Z"), fetchedAt: NOW } },
+	{ provider: "claude", data: { windows: { "5h": { usedPercent: 19, resetsAt: iso("2026-10-07T04:20:00Z") }, wk: { usedPercent: 6, resetsAt: iso("2026-10-12T19:00:00Z") } }, updatedAt: iso("2026-10-07T03:02:07Z"), fetchedAt: NOW } },
+	{ provider: "kimi", data: { windows: { "5h": { usedPercent: 0, resetsAt: iso("2026-10-07T06:13:06Z") }, wk: { usedPercent: 7.000000000000001, resetsAt: iso("2026-10-13T15:13:06Z") } }, updatedAt: iso("2026-10-07T03:03:20Z"), fetchedAt: NOW } },
+];
+const withUsage = (providers: UsageProviderState[] = samples(), f: FooterSnapshot = session(), now = NOW): FooterSnapshot => ({ ...f, usage: { now, providers } });
+// One provider's sample: `used` percent per window (null is unknown), reset in `resetIn` ms.
+const single = (provider: UsageProviderState["provider"], windows: Partial<Record<"5h" | "wk", number | null>>, extra: Partial<UsageProviderState> = {}, resetIn = 3_600_000, fetchedAt = NOW): UsageProviderState => ({
+	provider, ...extra,
+	data: { windows: Object.fromEntries(Object.entries(windows).map(([key, used]) => [key, { usedPercent: used, resetsAt: NOW + resetIn }])), updatedAt: NOW, fetchedAt },
+});
+// The USG squares row and the row below it (its text row, or the next field when there is none).
+const usg = (lines: string[]) => {
+	const p = plain(lines).map((line) => line.replace(/[┃┏┓┗┛━]/g, " ")), i = p.findIndex((line) => line.includes("04 USG"));
+	return i < 0 ? undefined : [p[i], p[i + 1]] as const;
+};
+const squaresOf = (line: string) => line.slice(line.indexOf("04 USG") + 7).match(/[■□?·]{5}/g) ?? [];
+
+test("USG snapshot: real samples at 100/48/30 columns, row order, collapse, plate and provider inks", () => {
+	const f = withUsage();
+	assert.deepEqual(rows(f, 100).slice(5), [
+		"   03 MDL  openai-codex/gpt-6-astra · thinking xhigh                                                ",
+		"   04 USG  CDX ■■■■□   CLD ■■■■■ ■■■■■   KIM ■■■■■ ■■■■■                                            ",
+		"┃              6d2h        1h15m 5d15h       3h09m 6d12h                                           ┃",
+		"┗━ 05 EXT  tatsu-cli: current | agent-workspace: update available (3)                             ━┛",
+	]);
+	assert.deepEqual(rows(f, 48).slice(6), [
+		"  03 MDL  openai-codex/gpt-6-astra · thinking   ",
+		"          xhigh                                 ",
+		"  04 USG  CDX ■■■■□   CLD ■■■■■ ■■■■■           ",
+		"              6d2h        1h15m 5d15h           ",
+		"          KIM ■■■■■ ■■■■■                       ",
+		"              3h09m 6d12h                       ",
+		"┃ 05 EXT  tatsu-cli: current | agent-workspace:┃",
+		"┗         update available (3)                 ┛",
+	]);
+	const minimal = rows(f, 30), first = minimal.findIndex((line) => line.includes("04 USG"));
+	assert.ok(minimal[first - 1].includes("thinking xhigh"), "after MDL");
+	assert.deepEqual(minimal.slice(first, first + 7), [
+		" 04 USG  CDX ■■■■□            ",
+		"             6d2h             ",
+		"CLD ■■■■■ ■■■■■               ",
+		"    1h15m 5d15h               ",
+		"KIM ■■■■■ ■■■■■               ",
+		"    3h09m 6d12h               ",
+		" 05 EXT  tatsu-cli: current | ",
+	]);
+	// Absent usage (CodexBar missing or not yet detected) and an empty provider list render no row.
+	assert.doesNotMatch(rows(session()).join("\n"), /USG/);
+	assert.doesNotMatch(rows(withUsage([])).join("\n"), /USG/);
+	const g = grid(renderFooter(f, 100, theme)), row = g[6], below = g[7], at = (s: string) => text(row).indexOf(s);
+	assert.ok(row.slice(2, 10).every((c) => c.fg === "text" && c.bg === "plate" && c.bold), "grey numbered plate");
+	for (const [tag, lit, used] of [["CDX", "codex", "codexUsed"], ["CLD", "claude", "claudeUsed"], ["KIM", "kimi", "kimiUsed"]]) {
+		assert.ok(row.slice(at(tag), at(tag) + 3).every((c) => c.fg === lit && c.bold && c.bg === "field"), `${tag} bold in its lit color`);
+		const squares = row.slice(at(tag) + 4).filter((c) => "■□".includes(c.ch)).slice(0, tag === "CDX" ? 5 : 10);
+		assert.ok(squares.every((c) => c.fg === (c.ch === "■" ? lit : used)), `${tag}: lit ■ and used □ inks`);
+	}
+	assert.ok(below.filter((c) => c.ch.trim() && c.ch !== "┃").every((c) => c.fg === "secondary"), "countdowns in secondary grey");
+	// Same characters in 256-color mode; no truecolor escapes.
+	const indexed = renderFooter(f, 100, hostTheme("256color"));
+	assert.deepEqual(plain(indexed), plain(renderFooter(f, 100, theme)));
+	assert.doesNotMatch(indexed.join(""), /\x1b\[(38|48);2;/);
+	assert.equal(visibleWidth("■□·"), 3);
+});
+
+test("USG squares: 20% each, lit while any of the slice remains, clamped, with float noise ignored", () => {
+	const lit = (used: number) => squaresOf(usg(rows(withUsage([single("codex", { wk: used })])))![0])[0];
+	for (const [remaining, squares] of [[0, "□□□□□"], [0.1, "■□□□□"], [19.9, "■□□□□"], [20, "■□□□□"], [20.1, "■■□□□"], [80, "■■■■□"], [100, "■■■■■"], [92.999999, "■■■■■"]] as const) {
+		assert.equal(lit(100 - remaining), squares, `remaining ${remaining}`);
+	}
+	assert.equal(lit(79.9999999999), "■□□□□", "20.0000000001 remaining counts as 20");
+	assert.equal(lit(99.99999), "■□□□□", "any positive remainder keeps a square lit");
+	assert.equal(lit(120), "□□□□□", "over 100% used clamps to empty");
+	assert.equal(lit(-5), "■■■■■", "negative used clamps to full");
+});
+
+test("USG countdown formats: Nm, HhMMm, HHh, DdHh, DDd, reset and ?", () => {
+	const m = 60_000, h = 60 * m, d = 24 * h;
+	const shown = (resetIn: number | null) => {
+		const provider = single("codex", { wk: 50 });
+		provider.data!.windows.wk!.resetsAt = resetIn === null ? null : NOW + resetIn;
+		return usg(rows(withUsage([provider])))![1].trim();
+	};
+	const cases: [number | null, string][] = [
+		[30_000, "1m"], [41 * m, "41m"], [59 * m, "59m"], [59 * m + 1, "1h00m"], [h, "1h00m"], [4 * h + 3 * m, "4h03m"], [9 * h + 59 * m, "9h59m"],
+		[10 * h, "10h"], [12 * h + 30 * m, "12h"], [23 * h + 59 * m, "23h"], [d, "1d0h"], [6 * d + 2 * h, "6d2h"], [5 * d + 15 * h + 55 * m, "5d15h"],
+		[9 * d + 23 * h + 59 * m, "9d23h"], [10 * d, "10d"], [12 * d + 5 * h, "12d"], [0, "reset"], [-m, "reset"], [null, "?"],
+	];
+	for (const [resetIn, expected] of cases) assert.equal(shown(resetIn), expected, String(resetIn));
+});
+
+test("USG states: pending, failure, no limits, unknown window, stale by failure or age; never success-shaped when unknown", () => {
+	const state = (provider: UsageProviderState) => usg(rows(withUsage([provider])))!.map((line) => line.slice(11).trimEnd());
+	assert.deepEqual(state({ provider: "codex" }), ["CDX ·····", "    pending"]);
+	assert.deepEqual(state({ provider: "claude", failure: "timeout" }), ["CLD ?????", "    timeout"]);
+	assert.deepEqual(state({ provider: "kimi", failure: "unavailable" }), ["KIM ?????", "    unavailable"]);
+	// A successful sample without 5h/week windows: no squares and no text row.
+	assert.deepEqual(state({ provider: "kimi", data: { windows: {}, updatedAt: NOW, fetchedAt: NOW } }), ["KIM no limits", "tatsu-cli: current | agent-workspace: update available (3)"]);
+	assert.deepEqual(state(single("claude", { "5h": null, wk: 30 })), ["CLD ????? ■■■■□", "    ?     1h00m"]);
+	const noReset = single("claude", { "5h": 30 }); noReset.data!.windows["5h"]!.resetsAt = null;
+	assert.deepEqual(state(noReset), ["CLD ■■■■□", "    ?"]);
+	// Stale after a failure: last good windows stay, the tag dims and its age shows below it.
+	const failed = single("claude", { "5h": 19, wk: 6 }, { failure: "unavailable" }); failed.data!.updatedAt = NOW - 16 * 60_000;
+	assert.deepEqual(state(failed), ["CLD ■■■■■ ■■■■■", "16m 1h00m 1h00m"]);
+	const tag = grid(renderFooter(withUsage([failed]), 100, theme))[6].slice(11, 14);
+	assert.ok(tag.every((c) => c.fg === "graphic" && !c.bold), "stale tag is dimmed");
+	// Stale by age alone: older than 15 minutes (CodexBar's updatedAt, else receipt time).
+	const aged = single("codex", { wk: 50 }); aged.data!.updatedAt = NOW - 15 * 60_000;
+	assert.deepEqual(state(aged), ["CDX ■■■□□", "    1h00m"], "exactly 15 minutes is fresh");
+	aged.data!.updatedAt = NOW - 15 * 60_000 - 1;
+	assert.deepEqual(state(aged), ["CDX ■■■□□", "16m 1h00m"]);
+	aged.data!.updatedAt = null; aged.data!.fetchedAt = NOW - 2 * 86_400_000 - 5 * 3_600_000;
+	assert.deepEqual(state(aged), ["CDX  ■■■□□", "2d5h 1h00m"], "a wide age widens the tag slot");
+	// Unknown is never success-shaped: no squares, no zero.
+	for (const provider of [{ provider: "codex" }, { provider: "claude", failure: "timeout" }] as UsageProviderState[]) {
+		assert.doesNotMatch(state(provider)[0], /[■□0]/);
+	}
+});
+
+test("USG wraps whole provider groups with their text rows; every line is bounded at widths 1..280 in every state and frame", () => {
+	const providers: UsageProviderState[][] = [samples(), [{ provider: "codex" }, { provider: "claude", failure: "unavailable" }, { provider: "kimi", data: { windows: {}, updatedAt: NOW, fetchedAt: NOW } }],
+		[single("codex", { "5h": null, wk: 99.9 }, { failure: "timeout" }, -1, NOW - 86_400_000 * 40), single("claude", { "5h": 0.1 }, {}, 86_400_000 * 400), single("kimi", { wk: 50 })]];
+	for (const list of providers) {
+		const f = withUsage(list, hostile());
+		const state = advanceMotion(startMotion(f, 0, 9, false), { ...f, usage: { now: NOW, providers: list.map((p) => p.data ? { ...p, data: { ...p.data, fetchedAt: p.data.fetchedAt + 1, windows: { ...p.data.windows, wk: p.data.windows.wk && { ...p.data.windows.wk, usedPercent: 100 } } } } : p) } }, 50);
+		const frames = [...eventFrames(f), motionFrame(state, 50), motionFrame(state, 200), motionFrame(state, 3990)];
+		for (let width = 1; width <= 280; width++) {
+			for (const frame of frames) {
+				const lines = renderFooter(f, width, theme, frame);
+				for (const line of lines) assert.ok(visibleWidth(line) <= width, `width ${width}: ${JSON.stringify(line)}`);
+				if (width >= 40) for (const line of lines) assert.equal(visibleWidth(line), width);
+			}
+			const lines = plain(renderFooter(f, width, theme));
+			if (width >= 16) for (const tag of ["CDX", "CLD", "KIM"]) assert.ok(lines.some((line) => line.includes(tag)), `${width}: ${tag} dropped`);
+			// Text-row tokens start under their squares (or under the tag for the stale age).
+			const start = lines.findIndex((line) => line.includes("04 USG")), end = lines.findIndex((line) => line.includes("05 EXT"));
+			for (let i = start; i < end - 1; i++) {
+				for (const token of lines[i + 1].matchAll(/[0-9a-z?]+/g)) {
+					const above = lines[i][token.index!];
+					if (above === undefined || !/[■□?·CK]/.test(above)) continue;
+					assert.ok(token.index === 0 || lines[i][token.index! - 1] === " ", `${width}: ${lines[i]} / ${lines[i + 1]}`);
+				}
+			}
+		}
+	}
+});
+
+test("USG minimal fallback splits groups wider than the line instead of clipping squares or countdowns", () => {
+	const f = withUsage();
+	for (let width = 9; width < 40; width++) {
+		const lines = rows(f, width), start = lines.findIndex((line) => line.includes("USG")), end = lines.findIndex((line) => line.includes("EXT"));
+		const usg = lines.slice(start, end).join("\n");
+		assert.equal(usg.match(/[■□]/g)?.length, 25, `${width}: every square kept\n${usg}`);
+		for (const token of ["CDX", "CLD", "KIM", "6d2h", "1h15m", "5d15h", "3h09m", "6d12h"]) assert.ok(usg.includes(token), `${width}: ${token}\n${usg}`);
+	}
+});
+
+test("USG edge flicker: the highest lit square dims 120 ms every 600 + 3400·f ms, under 3 pulses a second, Working or Idle", () => {
+	const dims = (f: FooterSnapshot, until: number) => {
+		const onsets: number[] = [], ends: number[] = [];
+		let was = false;
+		const state = simulate(f, 11, until, (state, now) => {
+			const dim = motionFrame(state, now).usage?.["codex/wk"]?.dim === true;
+			if (dim && !was) onsets.push(now);
+			if (!dim && was) ends.push(now);
+			was = dim;
+		}, false);
+		return { onsets, ends, state };
+	};
+	for (const [remaining, slice] of [[0.1, 0.005], [5, 0.25], [19.9, 0.995], [20, 1], [20.1, 0.005], [50, 0.5], [80, 1], [99.9, 0.995]] as const) {
+		for (const working of [true, false]) {
+			const f = withUsage([single("codex", { wk: 100 - remaining })], session(41.8, { working, units: 0 }));
+			const period = 600 + 3400 * slice, { onsets, ends } = dims(f, 20_000);
+			assert.ok(onsets.length >= Math.floor(20_000 / period) - 1, `${remaining}: pulses`);
+			onsets.forEach((at, i) => {
+				assert.ok(Math.abs(at - (i + 1) * period + EDGE) < 2, `${remaining}: pulse ${i} at ${at}, period ${period}`);
+				if (ends[i] !== undefined) assert.ok(Math.abs(ends[i] - at - EDGE) < 2, `${remaining}: 120 ms pulse`);
+			});
+			for (const at of onsets) assert.ok(onsets.filter((t) => t >= at && t < at + 1000).length < 3, `${remaining}: under 3 pulses a second`);
+		}
+	}
+	// Only a draining window flickers: full, empty and unknown windows never do.
+	for (const used of [0, 100, null]) assert.deepEqual(dims(withUsage([single("codex", { wk: used })]), 10_000).onsets, [], String(used));
+	// The dim pulse keeps the glyph and only darkens the edge square; the count and countdown stay current.
+	const f = withUsage([single("codex", { wk: 50 })]), state = startMotion(f, 0, 1, false), frame = motionFrame(state, 2300 - 60);
+	assert.equal(frame.usage?.["codex/wk"]?.dim, true);
+	const pulsed = grid(renderFooter(f, 100, theme, frame)), settled = grid(renderFooter(f, 100, theme));
+	const squares = (g: TestCell[][]) => g[6].filter((c) => "■□".includes(c.ch));
+	assert.deepEqual(squares(pulsed).map((c) => `${c.ch}${c.fg}`), ["■codex", "■codex", "■codexUsed", "□codexUsed", "□codexUsed"]);
+	assert.deepEqual(squares(settled).map((c) => `${c.ch}${c.fg}`), ["■codex", "■codex", "■codex", "□codexUsed", "□codexUsed"]);
+	assert.deepEqual(usg(renderFooter(f, 100, theme, frame)), usg(renderFooter(f, 100, theme)), "same glyphs and countdown");
+});
+const EDGE = 120;
+
+test("USG burn-out: a newer sample that lights fewer squares burns each lost square once, simultaneously; others settle", () => {
+	const sample = (used: number | null, stamp: number) => withUsage([single("claude", { "5h": used }, {}, 3_600_000, stamp)]);
+	const inks = (f: FooterSnapshot, frame: FooterFrame) => grid(renderFooter(f, 100, theme, frame))[6].filter((c) => "■□".includes(c.ch)).map((c) => `${c.ch}${c.fg}`);
+	const full = sample(10, 1), half = sample(50, 2);
+	let state = advanceMotion(startMotion(full, 0, 5, false), full, 100);
+	assert.deepEqual(state.usageBurns, {}, "first discovery settles");
+	state = advanceMotion(state, half, 1000);
+	assert.deepEqual(state.usageBurns, { "claude/5h": { at: 1000, from: 5, to: 3 } });
+	assert.equal(advanceMotion(state, half, 1050), state, "re-rendering the same sample never restarts it");
+	const lit = ["■claude", "■claude", "■claude"];
+	for (const [at, ink] of [[0, "■text"], [99, "■text"], [100, "■claude"], [249, "■claude"], [250, "■claudeMid"], [399, "■claudeMid"], [400, "■claudeUsed"], [599, "■claudeUsed"], [600, "□claudeUsed"]] as const) {
+		assert.deepEqual(inks(half, motionFrame(state, 1000 + at)), [...lit, ink, ink], `${at} ms`);
+	}
+	// Exact wakes at every step boundary.
+	const wakes: number[] = [];
+	for (let now = 1000; now < 1700; now += nextMotionDelay(state, now)) wakes.push(now);
+	for (const at of [1100, 1250, 1400, 1600]) assert.ok(wakes.includes(at), `wake at ${at}: ${wakes}`);
+	assert.deepEqual(advanceMotion(state, half, 1600).usageBurns, {}, "expires after 600 ms");
+	assert.deepEqual(usg(renderFooter(half, 100, theme, motionFrame(state, 1050)))![1], usg(renderFooter(half, 100, theme))![1], "countdown is current from frame zero");
+	// Newer data interrupts: a further drop starts from the latest count; an increase settles immediately.
+	const quarter = sample(70, 3);
+	let next = advanceMotion(state, quarter, 1200);
+	assert.deepEqual(next.usageBurns, { "claude/5h": { at: 1200, from: 3, to: 2 } });
+	next = advanceMotion(next, sample(50, 4), 1300);
+	assert.deepEqual(next.usageBurns, {});
+	assert.deepEqual(inks(sample(50, 4), motionFrame(next, 1300)), [...lit, "□claudeUsed", "□claudeUsed"]);
+	// Unknown transitions and failures that keep the last sample never burn.
+	let unknown = advanceMotion(startMotion(full, 0, 5, false), sample(null, 2), 100);
+	unknown = advanceMotion(unknown, half, 200);
+	assert.deepEqual(unknown.usageBurns, {});
+	const failing = { ...full, usage: { now: NOW, providers: [{ ...full.usage!.providers[0], failure: "timeout" as const }] } };
+	assert.deepEqual(advanceMotion(startMotion(full, 0, 5, false), failing, 100).usageBurns, {});
+	// Motion off is the settled frame: no burn, the edge square held lit; resuming starts fresh without catch-up.
+	assert.deepEqual(inks(half, SETTLED_FRAME), [...lit, "□claudeUsed", "□claudeUsed"]);
+	assert.deepEqual(startMotion(half, 5000, 5, false).usageBurns, {});
+});
+
+test("USG is excluded from boot, ghosts and re-strikes: its rows match the settled frame in every decoration event", () => {
+	const f = withUsage();
+	for (const width of [30, 48, 100, 160]) {
+		const settled = renderFooter(f, width, theme), at = plain(settled).findIndex((line) => line.includes("04 USG"));
+		const { G } = metrics(width), inner = (line: string) => width >= 40 ? sliceByColumn(line, G, width - 2 * G) : line;
+		for (const frame of eventFrames(f)) {
+			const lines = renderFooter(f, width, theme, { ...frame, usage: undefined });
+			for (const i of [at, at + 1]) assert.equal(inner(lines[i]), inner(settled[i]), `${width}: row ${i}`);
+		}
+	}
+});
+
+test("USG repaint delay: next countdown, stale-age or 15-minute change; none without time-dependent text", () => {
+	const m = 60_000;
+	assert.equal(usageRepaintDelay(undefined), undefined);
+	assert.equal(usageRepaintDelay({ now: NOW, providers: [{ provider: "codex" }, { provider: "claude", failure: "timeout" }] }), undefined);
+	const at = (resetIn: number, updatedAgo = 0, failure?: "timeout") => {
+		const provider = single("codex", { wk: 50 }, failure ? { failure } : {}, resetIn);
+		provider.data!.updatedAt = NOW - updatedAgo;
+		return usageRepaintDelay({ now: NOW, providers: [provider] });
+	};
+	assert.equal(at(41 * m + 6_000), 6_000, "41m07s → 41m after 6 s");
+	assert.equal(at(5 * m), m);
+	assert.equal(at(-m, 0), 15 * m + 1, "reset text is static; only the stale mark is due");
+	assert.equal(at(-m, 16 * m + 20_000, "timeout"), 40_001, "stale age steps each minute");
+	assert.equal(at(-m, 16 * m, "timeout"), 1, "an age of exactly 16m reads 17m a millisecond later");
+	assert.equal(at(-m, 14 * m), m + 1, "fresh data turns stale just after 15 minutes");
 });
