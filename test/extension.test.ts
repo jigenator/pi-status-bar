@@ -747,14 +747,14 @@ test("USG: missing codexbar (ENOENT) hides the row until a later poll finds it; 
 	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
 	await h.emitStart(); await h.motion("off");
 	await realSleep(400);
-	assert.doesNotMatch(h.text(), /USG|CDX|CLD|KIM/, "not installed: no row, not a failure state");
+	assert.doesNotMatch(h.text(), /USG|GPT|CLD|KMI/, "not installed: no row, not a failure state");
 	assert.match(h.text(), /05 EXT/);
 	const codexbar = await fakeCodexbar(f);
 	await advance(5 * 60_000);
-	await untilReal(() => /KIM ■/.test(h.text()) && /CLD ■/.test(h.text()) && /CDX ■/.test(h.text()));
+	await untilReal(() => /KMI ■/.test(h.text()) && /CLD ■/.test(h.text()) && /GPT ■/.test(h.text()));
 	// The mocked wall clock moved five minutes: 04:20 is now 1h10m away.
 	const [squares, countdowns] = usgRows(h);
-	assert.match(squares, /^ {3}04 USG {2}CDX ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KIM ■■■■■■■■ ■■■■■■■■ +$/);
+	assert.match(squares, /^ {3}04 USG {2}GPT ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KMI ■■■■■■■■ ■■■■■■■■ +$/);
 	assert.match(countdowns, /^\S? +6d2h +1h10m +5d15h +3h04m +6d12h +\S?$/);
 	const lines = h.text().split("\n");
 	assert.ok(lines.findIndex((line: string) => line.includes("03 MDL")) < lines.indexOf(squares) && lines.indexOf(squares) < lines.findIndex((line: string) => line.includes("05 EXT")));
@@ -776,7 +776,7 @@ test("USG: concurrent first round with pending providers, single-flight 5-minute
 	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
 	await h.emitStart(); await h.motion("off");
 	// Kimi and Codex answer first; Claude is still pending, never shown as a failure or zero.
-	await untilReal(() => /KIM ■/.test(h.text()) && /CDX ■/.test(h.text()));
+	await untilReal(() => /KMI ■/.test(h.text()) && /GPT ■/.test(h.text()));
 	let [squares, countdowns] = usgRows(h);
 	assert.match(squares, /CLD ········ ········/); assert.match(countdowns, /^\S? +6d2h +pending +3h09m +6d12h/);
 	await untilReal(() => /CLD ■/.test(h.text()));
@@ -808,51 +808,73 @@ test("USG: concurrent first round with pending providers, single-flight 5-minute
 	assert.match(squares, /CLD ■■■■■■■□ ■■■■■■■■/);
 	const under = (tag: string) => countdowns[squares.indexOf(tag)];
 	assert.match(under("CLD"), /\d/, "the failed provider shows its age under its tag");
-	assert.deepEqual([under("CDX"), under("KIM")], [" ", " "], "fresh providers are not marked stale");
+	assert.deepEqual([under("GPT"), under("KMI")], [" ", " "], "fresh providers are not marked stale");
 	assert.doesNotMatch(h.text(), /Not logged in|person@|Secret|unavailable/);
 	assert.deepEqual(await codexbar.kills(), []);
 	assert.deepEqual(h.errors, []);
 });
 
-test("USG: a row that appears after startup boots on the next renders, and a slow provider fills in without moving its column", async (t) => {
+test("USG: a row that appears after startup draws in over the next decoration wakes, and a slow provider fills in without moving its column", async (t) => {
 	const f = await fixtures(t), codexbar = await fakeCodexbar(f), advance = usageClock(t);
 	// Decoration time is mocked too, so each render is an exact frame; subprocesses still run on real time.
 	let mono = Math.ceil(performance.now());
 	t.mock.method(performance, "now", () => mono);
-	for (const provider of ["codex", "kimi"]) await codexbar.set(`delay-${provider}.0`, 300);
-	await codexbar.set("hold-claude.0", ""); // Claude stays pending until the boot assertions are done
+	// Codex answers first and shows the row. Kimi is released during the boot and Claude after it, so neither
+	// depends on real-time ordering.
+	await codexbar.set("hold-kimi.0", "");
+	await codexbar.set("hold-claude.0", "");
 	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
 	await h.emitStart();
 	assert.doesNotMatch(h.text(), /USG/, "not yet detected: no row");
 	mono += 2_000; h.text(); // the footer's own boot is over before the row exists
-	const usg = () => { const lines: string[] = h.component.render(300), i = lines.findIndex((line) => stripTerminalSequences(line).includes("04 USG")); return i < 0 ? [] : [lines[i], lines[i + 1]]; };
+	// The USG squares and text rows sit right after the model row (found by its text: plate lettering can be
+	// re-struck); before the row exists that is EXT.
+	const usg = (width = 300) => {
+		const lines: string[] = h.component.render(width), shown = lines.map((line) => stripTerminalSequences(line));
+		const i = shown.findIndex((line, j) => j > shown.findIndex((row) => row.includes(" · thinking ")) && !line.includes("PNYTL"));
+		return [lines[i], lines[i + 1]];
+	};
 	// The edge pulse's small square is the one size-only glyph change; it is still a lit square. Frame glyphs are
 	// ambient ghost targets, not USG content.
 	const plain = (rows: string[]) => rows.map((line) => stripTerminalSequences(line).replaceAll("▪", "■").replace(/[┃┏┓┗┛━]/g, " "));
-	await untilReal(() => /04 USG/.test(h.text()));
-	await untilReal(() => /CDX ■/.test(h.text()) && /KIM ■/.test(h.text()));
-	// The first renders with the row are its boot: the plate's pair is swapped and the tags wait on the band.
-	const swapped = "\x1b[38;2;85;85;85m\x1b[48;2;255;255;255m\x1b[1m 04 USG ";
+	const LOCKED = "\x1b[38;2;0;0;0m\x1b[48;2;192;254;4m\x1b[1m", GREY = "\x1b[38;2;113;113;113m\x1b[48;2;0;0;0m■";
+	await untilReal(() => usg()[0].includes(`${LOCKED} 04`));
+	// The first render with the row is tick 0 of its boot: only the plate's first three cells, latched.
 	const first = usg();
-	assert.ok(first[0].includes(swapped), "plate polarity swap on the first boot frame");
-	assert.match(plain(first)[0], /CDX ■■■■■■□□ {3}CLD ········ ········ {3}KIM ■■■■■■■■ ■■■■■■■■/);
-	const pendingAt = plain(first)[0].indexOf("CLD"), slotAt = plain(first)[0].indexOf("·", pendingAt);
-	// The single decoration timeout carries the boot: a wake per 50 ms tick to its end at tick 21, each a different
-	// frame of the same text.
+	assert.deepEqual(plain(first).map((line) => line.trimEnd()), ["   04", ""], "the plate's first cells latch first");
+	// The single decoration timeout carries the boot: a wake per 50 ms tick until it ends at tick 27.
 	const frames = [first];
-	for (let k = 1; k <= 21; k++) {
+	for (let k = 1; k <= 27; k++) {
 		const renders = h.renders;
 		mono += 50; await advance(50);
 		assert.ok(h.renders > renders, `tick ${k}: decoration wake`);
 		frames.push(usg());
+		if (k === 3) {
+			// Kimi answers while the front is still far from its column (x 48 from the plate). Below 40 columns its
+			// line starts at x = 0, so its squares are already drawn there.
+			await codexbar.release("hold-kimi.0");
+			await untilReal(() => /KMI ■/.test(stripTerminalSequences(h.component.render(30).join("\n"))));
+		}
 	}
-	assert.ok(!frames[2][0].includes(swapped), "the plate settles after two ticks");
-	for (const frame of frames) assert.deepEqual(plain(frame), plain(first), "characters never change during the boot");
-	assert.ok(new Set(frames.map((frame) => frame.join("\n"))).size > 10, "the boot restyles over many frames");
-	const settled = frames.at(-1)!;
-	mono += 30; assert.deepEqual(usg(), settled, "settled after about one second");
-	assert.match(plain(settled)[0], /CLD ········ ········/, "Claude is still pending after the boot");
-	// Claude answers later: its data fills in cell by cell, in place of the pending cells.
+	const settled = frames[27], [squares, below] = plain(settled);
+	assert.match(squares, /^ {3}04 USG {2}GPT ■■■■■■□□ {3}CLD ········ ········ {3}KMI ■■■■■■■■ ■■■■■■■■ +$/);
+	assert.match(below, /^ +6d2h +pending +3h09m +6d12h +$/);
+	assert.ok(!settled.join("").includes(LOCKED), "settled when the boot ends");
+	// Each frame draws the settled characters up to its front and nothing past it; the text row trails one tick.
+	frames.slice(0, 27).forEach((frame, k) => {
+		const [top, bottom] = plain(frame), front = (k + 1) * 3;
+		assert.equal(top, squares.slice(0, 2 + front).padEnd(squares.length), `tick ${k}: squares row`);
+		assert.equal(bottom, below.slice(0, 2 + k * 3).padEnd(below.length), `tick ${k}: text row`);
+		if (front <= 69) assert.ok(frame[0].includes(LOCKED + squares.slice(2 + front - 3, 2 + front)), `tick ${k}: the front latches`);
+		if (k >= 4 && k * 3 <= 66) assert.ok(frame[1].includes(LOCKED + below.slice(2 + k * 3 - 3, 2 + k * 3)), `tick ${k}: the text front latches`);
+	});
+	// Kimi arrived during the boot: drawn current when the front reached it, with no fill-in afterwards.
+	for (let k = 1; k <= 4; k++) { mono += 50; await advance(50); }
+	mono += 30;
+	assert.ok(!usg()[0].includes(GREY), "no fill-in queued for data that arrived during the boot");
+	assert.deepEqual(plain(usg()), plain(settled));
+	// Claude answers after the boot: its data fills in cell by cell, in place of the pending cells.
+	const pendingAt = squares.indexOf("CLD"), slotAt = squares.indexOf("·", pendingAt);
 	await codexbar.release("hold-claude.0");
 	await untilReal(() => /CLD ■/.test(h.text()));
 	const arrival = usg(), fills = [arrival];
@@ -863,14 +885,16 @@ test("USG: a row that appears after startup boots on the next renders, and a slo
 		fills.push(usg());
 	}
 	const row = plain(arrival)[0];
-	assert.match(row, /CDX ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KIM ■■■■■■■■ ■■■■■■■■/);
+	assert.match(row, /GPT ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KMI ■■■■■■■■ ■■■■■■■■/);
 	assert.deepEqual([row.indexOf("CLD"), row.indexOf("■", row.indexOf("CLD"))], [pendingAt, slotAt], "the column and its first square stay put");
 	assert.match(plain(arrival)[1], /1h15m {4}5d15h/);
-	assert.ok(arrival[0].includes("\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m■"), "the first square of each window is white on its tick");
-	assert.ok(arrival[0].includes("\x1b[38;2;113;113;113m\x1b[48;2;0;0;0m■"), "later squares wait in grey");
+	// GPT's lit squares are white too, so these look only at Claude's column.
+	const claude = (line: string) => line.slice(line.indexOf("CLD"), line.indexOf("KMI"));
+	assert.equal(claude(arrival[0]).split("\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m■").length - 1, 2, "the first square of each window is white on its tick");
+	assert.ok(claude(arrival[0]).includes(GREY), "later squares wait in grey");
 	for (const frame of fills) assert.deepEqual(plain(frame), plain(arrival), "values are current from the first fill frame");
 	assert.notDeepEqual(fills[0], fills.at(-1), "the fill-in restyles");
-	assert.ok(!fills.at(-1)![0].includes("\x1b[38;2;113;113;113m\x1b[48;2;0;0;0m■"), "settled after 400 ms");
+	assert.ok(!claude(fills.at(-1)![0]).includes(GREY), "settled after 400 ms");
 	assert.deepEqual(h.errors, []);
 });
 

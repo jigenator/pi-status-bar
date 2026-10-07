@@ -93,9 +93,9 @@ const C = {
 	pink: rgbColor(0xff, 0x15, 0xbd), // CMP 3–4
 	wz: rgbColor(0x2b, 0x20, 0x10), // 20% warning over the field
 	hz: rgbColor(0x30, 0x0e, 0x07), // 20% high over the field
-	// USG providers, from the new Marathon (CDX/KIM key-art samples, CLD its "Signal orange" token): lit, used (20% over
-	// the field) and burn-out mid (50%).
-	codex: rgbColor(0x18, 0xc2, 0xb4), codexUsed: rgbColor(0x05, 0x27, 0x24), codexMid: rgbColor(0x0c, 0x61, 0x5a),
+	// USG providers, from the new Marathon (GPT its white foreground token, CLD its "Signal orange" token, KMI a key-art
+	// sample): lit, used (20% over the field) and burn-out mid (50%).
+	codex: rgbColor(0xff, 0xff, 0xff), codexUsed: rgbColor(0x33, 0x33, 0x33), codexMid: rgbColor(0x80, 0x80, 0x80),
 	claude: rgbColor(0xff, 0x5c, 0x00), claudeUsed: rgbColor(0x33, 0x12, 0x00), claudeMid: rgbColor(0x80, 0x2e, 0x00),
 	kimi: rgbColor(0x25, 0x55, 0xfc), kimiUsed: rgbColor(0x07, 0x11, 0x32), kimiMid: rgbColor(0x13, 0x2b, 0x7e),
 };
@@ -169,9 +169,9 @@ const USAGE_WINDOWS = ["5h", "wk"] as const;
 type UsageWindowKey = typeof USAGE_WINDOWS[number];
 // `windows` is each provider's declared layout, not a parse rule: it fixes the column so polling never shifts it.
 const USAGE: Record<UsageProviderId, { tag: string; lit: Hue; used: Hue; mid: Hue; windows: readonly UsageWindowKey[] }> = {
-	codex: { tag: "CDX", lit: "codex", used: "codexUsed", mid: "codexMid", windows: ["wk"] },
+	codex: { tag: "GPT", lit: "codex", used: "codexUsed", mid: "codexMid", windows: ["wk"] },
 	claude: { tag: "CLD", lit: "claude", used: "claudeUsed", mid: "claudeMid", windows: ["5h", "wk"] },
-	kimi: { tag: "KIM", lit: "kimi", used: "kimiUsed", mid: "kimiMid", windows: ["5h", "wk"] },
+	kimi: { tag: "KMI", lit: "kimi", used: "kimiUsed", mid: "kimiMid", windows: ["5h", "wk"] },
 };
 const USAGE_STALE_MS = 15 * 60_000, BURN_STEPS = [100, 250, 400, 600] as const;
 // The edge square's pulse at the end of each period, in steps that end at `until` ms: it shrinks to the small square
@@ -335,10 +335,16 @@ const GHOST_WAIT: [number, number] = [2200, 4200]; // after each ghost event end
 const STRIKE_WAIT: [number, number] = [4000, 6000]; // start-to-start, independent of ghosts
 const BOOT_GHOST_DELAY = (BOOT_TICKS + 1) * TICK + 600, RESUME_GHOST_DELAY = 800;
 const PULSE_CAP = 6;
-// USG row boot: the plate swaps polarity for two ticks while each provider's tag waits, then latches USAGE_STAGGER
-// ticks after the previous one and starts its column's fill-in, which latches one cell per tick: 1050 ms in all.
-const USAGE_TAG_T0 = 5, USAGE_STAGGER = 4, USAGE_FILL_TICKS = USAGE_SQUARES;
-const USAGE_BOOT_TICKS = USAGE_TAG_T0 + USAGE_STAGGER * (Object.keys(USAGE).length - 1) + USAGE_FILL_TICKS;
+// A late provider's fill-in latches one cell per tick.
+const USAGE_FILL_TICKS = USAGE_SQUARES;
+// USG row boot: a draw-in front sweeps this many cells a tick from the plate's left edge, the text row one tick behind.
+export const USAGE_SWEEP_CELLS_PER_TICK = 3;
+// The widest natural row: plate, gap and every provider column with its declared windows plus room for one
+// undeclared window (where one exists), three cells apart. The boot covers it, then the text row's lag; wider rows
+// are drawn settled when it ends.
+const USAGE_ROW_CELLS = ` ${LABEL.usg} `.length + 1 - USAGE_GAP
+	+ Object.values(USAGE).reduce((sum, look) => sum + usageColumn(Math.min(look.windows.length + 1, USAGE_WINDOWS.length)) + USAGE_GAP, 0);
+export const USAGE_BOOT_TICKS = Math.ceil(USAGE_ROW_CELLS / USAGE_SWEEP_CELLS_PER_TICK) + 1;
 
 type StrikeKind = "heavy" | "void" | "flash" | "mid" | "light" | "worn";
 type GhostSpec = { hide: true } | { ch: string; fg: Hue | "@edge" | "@edgeL" };
@@ -385,7 +391,7 @@ export type MotionState = Readonly<{
 	usageShown: boolean;
 	/** When the USG row booted (it appeared, or was present at a booting start). */
 	usageBoot?: number;
-	/** Per provider: when its fill-in starts (later while a row boot staggers it). Present until it completes. */
+	/** Per provider: when its fill-in started (data first arrived after any row boot). Present until it completes. */
 	usageFill: Readonly<Partial<Record<UsageProviderId, number>>>;
 }>;
 type UsageMemory = Readonly<{ stamp: number; lit?: number; period?: number }>;
@@ -409,9 +415,9 @@ export type FooterFrame = Readonly<{
 	ponytailMask?: number;
 	/** Only USG square inks; lit counts, glyph positions and text always come from the snapshot. */
 	usage?: Readonly<Record<string, UsageEffect>>;
-	/** Ticks since the USG row booted (plate polarity); absent once settled. */
+	/** Ticks since the USG row booted, which place its draw-in front; absent once settled. */
 	usageBoot?: number;
-	/** Per provider: ticks since its fill-in started, negative while its tag waits; absent once settled. Style only. */
+	/** Per provider: ticks since its fill-in started; absent once settled. Style only. */
 	usageFill?: Readonly<Partial<Record<UsageProviderId, number>>>;
 }>;
 export const SETTLED_FRAME: FooterFrame = Object.freeze({ boot: Infinity, bootSeed: 0, cal: 0, tagFlash: false, flash70: false, flash90: false, pulse: null });
@@ -447,9 +453,6 @@ const sameUsage = (a: Readonly<Record<string, UsageMemory>>, b: Readonly<Record<
 const providerOf = (key: string) => key.split("/")[0] as UsageProviderId;
 // Providers the USG row renders, in display order; none means no row.
 const usageRow = (snapshot: FooterSnapshot) => (snapshot.usage?.providers ?? []).filter((provider) => USAGE[provider.provider]);
-// Row boot: each column's fill-in starts as its tag latches, staggered in display order.
-const rowFill = (row: readonly UsageProviderState[], at: number): Partial<Record<UsageProviderId, number>> =>
-	Object.fromEntries(row.map((provider, i) => [provider.provider, at + (USAGE_TAG_T0 + USAGE_STAGGER * i) * TICK]));
 const sameFill = (a: Readonly<Partial<Record<UsageProviderId, number>>>, b: Readonly<Partial<Record<UsageProviderId, number>>>) => {
 	const keys = Object.keys(a) as UsageProviderId[];
 	return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
@@ -472,7 +475,7 @@ export function startMotion(snapshot: FooterSnapshot, now: number, seed: number,
 		units: knownCount(snapshot.activity?.units) ?? 0,
 		ponytailActive: ponytailLit(snapshot),
 		usage: usageMemory(snapshot), usageBurns: {},
-		usageShown: row.length > 0, usageBoot: boot && row.length ? now : undefined, usageFill: boot ? rowFill(row, now) : {},
+		usageShown: row.length > 0, usageBoot: boot && row.length ? now : undefined, usageFill: {},
 	};
 	return { ...state, cursor: r.cursor };
 }
@@ -538,25 +541,25 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 	set("units", knownCount(snapshot.activity?.units) ?? 0);
 	set("ponytailActive", ponytailLit(snapshot));
 
-	// USG row boot whenever the row appears, including again after it was hidden. Afterwards a provider that gains
-	// data (from pending or a failure without data) fills in from now, unless a row boot has its fill-in still ahead.
-	// A newer sample never restarts a fill-in.
+	// USG row boot (its draw-in) whenever the row appears, including again after it was hidden. Afterwards a provider
+	// that gains data (from pending or a failure without data) fills in from now; during a row boot it is simply drawn
+	// current when the front reaches it. A newer sample never restarts a fill-in.
 	const row = usageRow(snapshot);
 	let fill: Partial<Record<UsageProviderId, number>> = {};
 	for (const [provider, at] of Object.entries(next.usageFill) as [UsageProviderId, number][]) if (ticksSince(at, now) < USAGE_FILL_TICKS) fill[provider] = at;
 	if (next.usageBoot !== undefined && ticksSince(next.usageBoot, now) >= USAGE_BOOT_TICKS) set("usageBoot", undefined);
 	if (!row.length) { set("usageBoot", undefined); fill = {}; }
-	else if (!state.usageShown) { set("usageBoot", now); fill = rowFill(row, now); }
-	else {
+	else if (!state.usageShown) { set("usageBoot", now); fill = {}; }
+	else if (next.usageBoot === undefined) {
 		const had = new Set(Object.keys(state.usage).map(providerOf));
-		for (const provider of row) if (provider.data && !had.has(provider.provider) && !((fill[provider.provider] ?? -Infinity) > now)) fill[provider.provider] = now;
+		for (const provider of row) if (provider.data && !had.has(provider.provider)) fill[provider.provider] = now;
 	}
 	set("usageShown", row.length > 0);
 	if (!sameFill(fill, next.usageFill)) set("usageFill", fill);
 
 	// USG burn-out: a newer successful sample that lights fewer squares. First discovery, increases (resets) and
-	// unknown transitions settle; newer data interrupts a running burn and settles to the latest. A window whose
-	// fill-in is running shows its current values instead.
+	// unknown transitions settle; newer data interrupts a running burn and settles to the latest. A window whose row
+	// boot or fill-in is running shows its current values instead.
 	const usage = usageMemory(snapshot), burns = { ...next.usageBurns };
 	let burned = false;
 	for (const key of Object.keys(burns)) if (now - burns[key].at >= BURN_STEPS[3] || !usage[key]) { delete burns[key]; burned = true; }
@@ -564,7 +567,7 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 		const previous = state.usage[key];
 		if (!previous || previous.stamp === memory.stamp) continue;
 		if (burns[key]) { delete burns[key]; burned = true; }
-		if (previous.lit !== undefined && memory.lit !== undefined && memory.lit < previous.lit && fill[providerOf(key)] === undefined) { burns[key] = { at: now, from: previous.lit, to: memory.lit }; burned = true; }
+		if (previous.lit !== undefined && memory.lit !== undefined && memory.lit < previous.lit && next.usageBoot === undefined && fill[providerOf(key)] === undefined) { burns[key] = { at: now, from: previous.lit, to: memory.lit }; burned = true; }
 	}
 	if (!sameUsage(state.usage, usage)) set("usage", usage);
 	if (burned) set("usageBurns", burns);
@@ -637,14 +640,15 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 		if (k < USAGE_FILL_TICKS) fill[provider] = k;
 	}
 	if (Object.keys(fill).length) frame.usageFill = fill;
-	// A running fill-in suppresses its windows' edge pulse and burn-out; a burn-out suppresses its window's pulse.
+	// A running row boot or fill-in suppresses its windows' edge pulse and burn-out; a burn-out suppresses its window's pulse.
+	const held = (key: string) => frame.usageBoot !== undefined || fill[providerOf(key)] !== undefined;
 	const usage: Record<string, UsageEffect> = {};
 	for (const [key, burn] of Object.entries(state.usageBurns)) {
 		const elapsed = now - burn.at;
-		if (elapsed >= 0 && elapsed < BURN_STEPS[3] && fill[providerOf(key)] === undefined) usage[key] = { burn: { from: burn.from, to: burn.to, elapsed } };
+		if (elapsed >= 0 && elapsed < BURN_STEPS[3] && !held(key)) usage[key] = { burn: { from: burn.from, to: burn.to, elapsed } };
 	}
 	for (const [key, memory] of Object.entries(state.usage)) {
-		const edge = memory.period === undefined || fill[providerOf(key)] !== undefined || usage[key] ? undefined : edgeStep(memory.period, now - state.epoch);
+		const edge = memory.period === undefined || held(key) || usage[key] ? undefined : edgeStep(memory.period, now - state.epoch);
 		if (edge !== undefined) usage[key] = { edge };
 	}
 	if (Object.keys(usage).length) frame.usage = usage;
@@ -705,7 +709,7 @@ export function nextMotionDelay(state: MotionState, now: number): number {
 		const step = BURN_STEPS.find((at) => at > now - burn.at);
 		if (step !== undefined) due = Math.min(due, burn.at + step);
 	}
-	// USG row boot and fill-in latch on 50 ms ticks.
+	// USG row-boot front and fill-in latch on 50 ms ticks.
 	if (state.usageBoot !== undefined) tickOf(state.usageBoot, USAGE_BOOT_TICKS);
 	for (const at of Object.values(state.usageFill)) if (at !== undefined) tickOf(at, USAGE_FILL_TICKS);
 	// Due glitch, ghost and re-strike starts; none start during boot.
@@ -1046,9 +1050,9 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const ink = (s: Style): Style => (fill !== undefined && fill < lastLatch ? { fg: "graphic" } : s);
 		const grey = () => ({ fg: "graphic" }) as Style;
 		const declared = look.windows.length, width = usageColumn(declared);
-		// Row boot: the tag waits on the pending band until it latches. Stale dims it to the unknown grey: the 50%
-		// mixes are under 3:1 on black, too faint for text.
-		const tagStyle: Style = fill !== undefined && fill < 0 ? PENDING : age === undefined ? { fg: look.lit, bold: true } : { fg: "graphic" };
+		// Stale dims the tag to the unknown grey: CLD's and KMI's 50% mixes are under 3:1 on black, too faint for text,
+		// so every stale tag uses the one grey.
+		const tagStyle: Style = age === undefined ? { fg: look.lit, bold: true } : { fg: "graphic" };
 		const parts = [usagePart(paint(look.tag, tagStyle), 3, 3, age ? paint(age, ink({ fg: "warn" })) : "", age?.length ?? 0)];
 		if (!data) {
 			// One grey cell group per declared slot; the state word sits under the first.
@@ -1115,9 +1119,20 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		flush();
 		return lines;
 	};
-	// Row boot: the plate swaps its pair for two ticks, like CMP, which keeps its contrast.
-	const usgStyle: Style = frame.usageBoot !== undefined && frame.usageBoot < 2 ? { fg: "plate", bg: "text", bold: true } : GREY_PLATE;
-	const usgPlate = letters(` ${LABEL.usg}`.padEnd(8), usgStyle);
+	// Row boot: a draw-in front sweeps each USG line from its left edge (the plate's, on the first line), the text row
+	// one tick behind. Cells it has not reached are blank, like the header corners drawing in; the front latches for
+	// one tick, like the path lock; cells behind it are settled. Every drawn cell shows its current character.
+	const sweep = USAGE_SWEEP_CELLS_PER_TICK, usageTick = frame.usageBoot;
+	const topFront = usageTick === undefined ? Infinity : (usageTick + 1) * sweep, textFront = usageTick === undefined ? Infinity : usageTick * sweep;
+	const drawIn = (x: number, c: Cell, front: number): Cell => (x >= front ? { ch: " ", bg: "field" } : x >= front - sweep ? { ch: c.ch, ...LOCKED } : c);
+	// The same for pre-styled USG text (single-width characters only) whose first cell is at x: its settled part, the
+	// front repainted from its characters, and nothing past the front; callers pad with blank field.
+	const drawInText = (text: string, x: number, front: number) => {
+		if (front === Infinity) return text;
+		const settled = Math.max(0, front - sweep - x);
+		return truncateToWidth(text, settled, "") + paint([...stripTerminalSequences(text)].slice(settled, Math.max(0, front - x)).join(""), LOCKED);
+	};
+	const usgPlate = letters(` ${LABEL.usg}`.padEnd(8), GREY_PLATE);
 
 	const { percent, tone, windowText, tokensText } = contextOf(snapshot);
 	const readoutText = `${tokensText}${windowText ? `/${windowText}` : ""}`;
@@ -1161,12 +1176,13 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		if (usageGroups.length) {
 			// Inline label, then the first group beside it when it fits; text rows stay under their squares.
 			const fitted = usageGroups.flatMap((group) => splitGroup(group, W));
-			const label = paint(` ${LABEL.usg} `, usgStyle) + gap(), inline = footprint(fitted[0]) <= W - 9;
-			if (!inline) lines.push(serialize(runPad(label, W)));
+			const label = paint(` ${LABEL.usg} `, GREY_PLATE) + gap(), inline = footprint(fitted[0]) <= W - 9;
+			if (!inline) lines.push(serialize(runPad(drawInText(label, 0, topFront), W)));
+			// The row boot sweeps every line from its own left edge; the blank label column stays blank.
 			usageLines(fitted, inline ? W - 9 : W, W).forEach((line, i) => {
 				const lead = inline && i === 0;
-				lines.push(serialize(runPad((lead ? label : "") + line.top, W)));
-				if (line.bottom) lines.push(serialize(runPad((lead ? paint(" ".repeat(9)) : "") + line.bottom, W)));
+				lines.push(serialize(runPad(drawInText((lead ? label : "") + line.top, 0, topFront), W)));
+				if (line.bottom) lines.push(serialize(runPad((lead ? paint(" ".repeat(9)) : "") + drawInText(line.bottom, lead ? 9 : 0, textFront), W)));
 			});
 		}
 		statuses.forEach((status, i) => {
@@ -1373,10 +1389,12 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		if (ponytailPlate) body.push(...fieldRows(undefined, paint(" ".repeat(plateAt), { bg: band }) + ponytailPlate + bandTail, FW, band));
 	}
 	// USG content is pre-styled runs and its plate has no zone, so the footer boot, ghosts and re-strikes never reach
-	// it; only its own row boot and fill-in restyle it.
+	// it; only its own row boot and fill-in restyle it. Wrapped lines draw in from their own left edge, the plate
+	// column's, whose blank cells stay blank.
 	usageLines(usageGroups, FW, FW).forEach((line, i) => {
-		body.push([...(i === 0 ? usgPlate : blanks(P)), ...blanks(1), ...runPad(line.top, FW, "field", false)]);
-		if (line.bottom) body.push([...blanks(P), ...blanks(1), ...runPad(line.bottom, FW, "field", false)]);
+		const lead = i === 0 ? [...usgPlate, ...blanks(1)].map((c, x) => drawIn(x, c, topFront)) : blanks(P + 1);
+		body.push([...lead, ...runPad(drawInText(line.top, P + 1, topFront), FW, "field", false)]);
+		if (line.bottom) body.push([...blanks(P + 1), ...runPad(drawInText(line.bottom, P + 1, textFront), FW, "field", false)]);
 	});
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);

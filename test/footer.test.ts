@@ -10,7 +10,7 @@ const require = createRequire(process.env.PI_HOST_ROOT ? resolve(process.env.PI_
 const { createJiti } = require("jiti");
 const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false, alias: { "@earendil-works/pi-tui": require.resolve("@earendil-works/pi-tui") } });
 const footer = await jiti.import(resolve("src/footer.ts"));
-const { renderFooter, safeText, startMotion, advanceMotion, motionFrame, nextMotionDelay, usageRepaintDelay, SETTLED_FRAME, MOTION_TICK_MS } = footer;
+const { renderFooter, safeText, startMotion, advanceMotion, motionFrame, nextMotionDelay, usageRepaintDelay, SETTLED_FRAME, MOTION_TICK_MS, USAGE_BOOT_TICKS, USAGE_SWEEP_CELLS_PER_TICK } = footer;
 const { visibleWidth, stripTerminalSequences, sliceByColumn, styleText } = await import(pathToFileURL(require.resolve("@earendil-works/pi-tui")).href);
 // Same concrete-color conversion Pi's Theme.style uses; no semantic theme tokens are consulted.
 const hostTheme = (mode = "truecolor") => ({ style: (text: string, options: object) => styleText(text, options, mode), getColorMode: () => mode });
@@ -62,7 +62,8 @@ const repository = (f: FooterSnapshot) => {
 const PALETTE: Record<string, string> = {
 	"#000000": "field", "#c0fe04": "primary", "#ffffff": "text", "#cfcfcf": "secondary", "#555555": "plate", "#1c1c1c": "surface",
 	"#d79e52": "warn", "#f24723": "high", "#717171": "graphic", "#2b2010": "wz", "#300e07": "hz", "#5200ff": "violet", "#ff15bd": "pink",
-	"#18c2b4": "codex", "#052724": "codexUsed", "#0c615a": "codexMid", "#ff5c00": "claude", "#331200": "claudeUsed", "#802e00": "claudeMid",
+	// GPT's lit white is the text white, so it reads as `text` here.
+	"#333333": "codexUsed", "#808080": "codexMid", "#ff5c00": "claude", "#331200": "claudeUsed", "#802e00": "claudeMid",
 	"#2555fc": "kimi", "#071132": "kimiUsed", "#132b7e": "kimiMid",
 };
 const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";");
@@ -1419,16 +1420,16 @@ test("USG snapshot: real samples at 100/48/30 columns, row order, collapse, plat
 	const f = withUsage();
 	assert.deepEqual(rows(f, 100).slice(5), [
 		"   03 MDL  openai-codex/gpt-6-astra · thinking xhigh                                                ",
-		"   04 USG  CDX ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KIM ■■■■■■■■ ■■■■■■■■                             ",
+		"   04 USG  GPT ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KMI ■■■■■■■■ ■■■■■■■■                             ",
 		"┃              6d2h           1h15m    5d15h          3h09m    6d12h                               ┃",
 		"┗━ 05 EXT  tatsu-cli: current | agent-workspace: update available (3)                             ━┛",
 	]);
 	assert.deepEqual(rows(f, 48).slice(6), [
 		"  03 MDL  openai-codex/gpt-6-astra · thinking   ",
 		"          xhigh                                 ",
-		"  04 USG  CDX ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■  ",
+		"  04 USG  GPT ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■  ",
 		"              6d2h           1h15m    5d15h     ",
-		"          KIM ■■■■■■■■ ■■■■■■■■                 ",
+		"          KMI ■■■■■■■■ ■■■■■■■■                 ",
 		"              3h09m    6d12h                    ",
 		"┃ 05 EXT  tatsu-cli: current | agent-workspace:┃",
 		"┗         update available (3)                 ┛",
@@ -1436,11 +1437,11 @@ test("USG snapshot: real samples at 100/48/30 columns, row order, collapse, plat
 	const minimal = rows(f, 30), first = minimal.findIndex((line) => line.includes("04 USG"));
 	assert.ok(minimal[first - 1].includes("thinking xhigh"), "after MDL");
 	assert.deepEqual(minimal.slice(first, first + 7), [
-		" 04 USG  CDX ■■■■■■□□         ",
+		" 04 USG  GPT ■■■■■■□□         ",
 		"             6d2h             ",
 		"CLD ■■■■■■■□ ■■■■■■■■         ",
 		"    1h15m    5d15h            ",
-		"KIM ■■■■■■■■ ■■■■■■■■         ",
+		"KMI ■■■■■■■■ ■■■■■■■■         ",
 		"    3h09m    6d12h            ",
 		" 05 EXT  tatsu-cli: current | ",
 	]);
@@ -1449,12 +1450,17 @@ test("USG snapshot: real samples at 100/48/30 columns, row order, collapse, plat
 	assert.doesNotMatch(rows(withUsage([])).join("\n"), /USG/);
 	const g = grid(renderFooter(f, 100, theme)), row = g[6], below = g[7], at = (s: string) => text(row).indexOf(s);
 	assert.ok(row.slice(2, 10).every((c) => c.fg === "text" && c.bg === "plate" && c.bold), "grey numbered plate");
-	for (const [tag, lit, used] of [["CDX", "codex", "codexUsed"], ["CLD", "claude", "claudeUsed"], ["KIM", "kimi", "kimiUsed"]]) {
+	for (const [tag, lit, used] of [["GPT", "text", "codexUsed"], ["CLD", "claude", "claudeUsed"], ["KMI", "kimi", "kimiUsed"]]) {
 		assert.ok(row.slice(at(tag), at(tag) + 3).every((c) => c.fg === lit && c.bold && c.bg === "field"), `${tag} bold in its lit color`);
-		const squares = row.slice(at(tag) + 4).filter((c) => "■□".includes(c.ch)).slice(0, tag === "CDX" ? 8 : 16);
+		const squares = row.slice(at(tag) + 4).filter((c) => "■□".includes(c.ch)).slice(0, tag === "GPT" ? 8 : 16);
 		assert.ok(squares.every((c) => c.fg === (c.ch === "■" ? lit : used)), `${tag}: lit ■ and used □ inks`);
 	}
 	assert.ok(below.filter((c) => c.ch.trim() && c.ch !== "┃").every((c) => c.fg === "secondary"), "countdowns in secondary grey");
+	// GPT is lit white: its bold tag and lit squares are #ffffff in truecolor, its used squares #333333.
+	const raw = renderFooter(f, 100, theme)[6], white = fg("#ffffff") + bg("#000000");
+	assert.ok(raw.includes(`${white}\x1b[1mGPT`), "GPT tag in #ffffff");
+	assert.equal(raw.slice(raw.indexOf("GPT"), raw.indexOf("CLD")).split(`${white}■`).length - 1, 6, "six lit GPT squares in #ffffff");
+	assert.equal(raw.slice(raw.indexOf("GPT"), raw.indexOf("CLD")).split(`${fg("#333333")}${bg("#000000")}□`).length - 1, 2, "two used GPT squares in #333333");
 	// Same characters in 256-color mode; no truecolor escapes.
 	const indexed = renderFooter(f, 100, hostTheme("256color"));
 	assert.deepEqual(plain(indexed), plain(renderFooter(f, 100, theme)));
@@ -1469,25 +1475,25 @@ test("USG exact snapshots at 100 columns: pending, mixed, full, failed, timeout,
 	assert.equal(rows(withUsage(), 100)[5], mdl);
 	const cases: [string, UsageProviderState[], string, string][] = [
 		["pending", [{ provider: "codex" }, { provider: "claude" }, { provider: "kimi" }],
-			"   04 USG  CDX ········   CLD ········ ········   KIM ········ ········                             ",
+			"   04 USG  GPT ········   CLD ········ ········   KMI ········ ········                             ",
 			"┃              pending        pending                 pending                                      ┃"],
 		["mixed", [{ provider: "codex" }, { provider: "claude" }, kimi],
-			"   04 USG  CDX ········   CLD ········ ········   KIM ■■■■■■■■ ■■■■■■■■                             ",
+			"   04 USG  GPT ········   CLD ········ ········   KMI ■■■■■■■■ ■■■■■■■■                             ",
 			"┃              pending        pending                 3h09m    6d12h                               ┃"],
 		["full", [codex, claude, kimi],
-			"   04 USG  CDX ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KIM ■■■■■■■■ ■■■■■■■■                             ",
+			"   04 USG  GPT ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KMI ■■■■■■■■ ■■■■■■■■                             ",
 			"┃              6d2h           1h15m    5d15h          3h09m    6d12h                               ┃"],
 		["claude failed", [codex, { provider: "claude", failure: "failed" }, kimi],
-			"   04 USG  CDX ■■■■■■□□   CLD ???????? ????????   KIM ■■■■■■■■ ■■■■■■■■                             ",
+			"   04 USG  GPT ■■■■■■□□   CLD ???????? ????????   KMI ■■■■■■■■ ■■■■■■■■                             ",
 			"┃              6d2h           failed                  3h09m    6d12h                               ┃"],
 		["claude timeout", [codex, { provider: "claude", failure: "timeout" }, kimi],
-			"   04 USG  CDX ■■■■■■□□   CLD ???????? ????????   KIM ■■■■■■■■ ■■■■■■■■                             ",
+			"   04 USG  GPT ■■■■■■□□   CLD ???????? ????????   KMI ■■■■■■■■ ■■■■■■■■                             ",
 			"┃              6d2h           timeout                 3h09m    6d12h                               ┃"],
 		["codex stale", [{ ...codex, failure: "timeout" }, claude, kimi],
-			"   04 USG  CDX ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KIM ■■■■■■■■ ■■■■■■■■                             ",
+			"   04 USG  GPT ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KMI ■■■■■■■■ ■■■■■■■■                             ",
 			"┃          4m  6d2h           1h15m    5d15h          3h09m    6d12h                               ┃"],
 		["claude none", [codex, { provider: "claude", data: { windows: {}, updatedAt: NOW, fetchedAt: NOW } }, kimi],
-			"   04 USG  CDX ■■■■■■□□   CLD none                KIM ■■■■■■■■ ■■■■■■■■                             ",
+			"   04 USG  GPT ■■■■■■□□   CLD none                KMI ■■■■■■■■ ■■■■■■■■                             ",
 			"┃              6d2h                                   3h09m    6d12h                               ┃"],
 	];
 	for (const [label, providers, squares, text] of cases) {
@@ -1513,10 +1519,10 @@ const usgLayout = (lines: string[]) => {
 	const start = p.findIndex((line) => line.includes("04 USG")), end = p.findIndex((line, i) => i > start && /0[5] EXT/.test(line));
 	const out: Record<string, { line: number; col: number; slots: number[]; text: number[] }> = {};
 	p.slice(start, end < 0 ? undefined : end).forEach((line, i, block) => {
-		for (const tag of ["CDX", "CLD", "KIM"]) {
+		for (const tag of ["GPT", "CLD", "KMI"]) {
 			const col = line.indexOf(`${tag} `);
 			if (col < 0) continue;
-			const next = Math.min(...["CDX", "CLD", "KIM"].map((other) => line.indexOf(other, col + 3)).filter((at) => at > col), line.length);
+			const next = Math.min(...["GPT", "CLD", "KMI"].map((other) => line.indexOf(other, col + 3)).filter((at) => at > col), line.length);
 			const own = (row = "") => [...row.slice(col + 4, next - 2).matchAll(/\S+/g)].map((match) => col + 4 + match.index!);
 			out[tag] = { line: i, col, slots: [...line.slice(col + 4, next).matchAll(/[■□?·]{8}|none/g)].map((match) => col + 4 + match.index!), text: own(block[i + 1]) };
 		}
@@ -1538,9 +1544,9 @@ test("USG columns are fixed: tags, slots and text never move across pending, par
 	];
 	for (const width of [100, 48]) {
 		const reference = usgLayout(renderFooter(withUsage(), width, theme));
-		// 60 cells: CDX 12, CLD and KIM 21 each, three apart; KIM wraps at 48 columns.
+		// 60 cells: GPT 12, CLD and KMI 21 each, three apart; KMI wraps at 48 columns.
 		assert.deepEqual(Object.fromEntries(Object.entries(reference).map(([tag, at]) => [tag, [at.line, at.col, at.slots]])),
-			width === 100 ? { CDX: [0, 11, [15]], CLD: [0, 26, [30, 39]], KIM: [0, 50, [54, 63]] } : { CDX: [0, 10, [14]], CLD: [0, 25, [29, 38]], KIM: [2, 10, [14, 23]] });
+			width === 100 ? { GPT: [0, 11, [15]], CLD: [0, 26, [30, 39]], KMI: [0, 50, [54, 63]] } : { GPT: [0, 10, [14]], CLD: [0, 25, [29, 38]], KMI: [2, 10, [14, 23]] });
 		for (const [label, providers] of states) {
 			const layout = usgLayout(renderFooter(withUsage(providers), width, theme));
 			for (const [tag, at] of Object.entries(layout)) {
@@ -1556,7 +1562,7 @@ test("USG columns are fixed: tags, slots and text never move across pending, par
 	// The exception: an undeclared window that the sample reports is still shown, in 5H/WK order, widening its column.
 	const extra = { ...codex, data: { ...codex.data!, windows: { ...codex.data!.windows, "5h": { usedPercent: 50, resetsAt: NOW + 3_600_000 } } } };
 	assert.deepEqual(usg(rows(withUsage([extra, claude, kimi])))!.map((line) => line.trimEnd()), [
-		"   04 USG  CDX ■■■■□□□□ ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KIM ■■■■■■■■ ■■■■■■■■",
+		"   04 USG  GPT ■■■■□□□□ ■■■■■■□□   CLD ■■■■■■■□ ■■■■■■■■   KMI ■■■■■■■■ ■■■■■■■■",
 		"               1h00m    6d2h           1h15m    5d15h          3h09m    6d12h",
 	]);
 });
@@ -1591,12 +1597,12 @@ test("USG countdown formats: Nm, HhMMm, HHh, DdHh, DDd, reset and ?", () => {
 test("USG states: pending, failed/timeout, none, unknown or blank window, stale by failure or age; never success-shaped when unknown", () => {
 	const state = (provider: UsageProviderState) => usg(rows(withUsage([provider])))!.map((line) => line.slice(11).trimEnd());
 	// Every declared slot shows grey cells; the state word sits under the first.
-	assert.deepEqual(state({ provider: "codex" }), ["CDX ········", "    pending"]);
+	assert.deepEqual(state({ provider: "codex" }), ["GPT ········", "    pending"]);
 	assert.deepEqual(state({ provider: "claude" }), ["CLD ········ ········", "    pending"]);
 	assert.deepEqual(state({ provider: "claude", failure: "timeout" }), ["CLD ???????? ????????", "    timeout"]);
-	assert.deepEqual(state({ provider: "kimi", failure: "failed" }), ["KIM ???????? ????????", "    failed"]);
+	assert.deepEqual(state({ provider: "kimi", failure: "failed" }), ["KMI ???????? ????????", "    failed"]);
 	// A successful sample without 5h/week windows: grey `none`, no squares and no text row.
-	assert.deepEqual(state({ provider: "kimi", data: { windows: {}, updatedAt: NOW, fetchedAt: NOW } }), ["KIM none", "tatsu-cli: current | agent-workspace: update available (3)"]);
+	assert.deepEqual(state({ provider: "kimi", data: { windows: {}, updatedAt: NOW, fetchedAt: NOW } }), ["KMI none", "tatsu-cli: current | agent-workspace: update available (3)"]);
 	assert.deepEqual(state(single("claude", { "5h": null, wk: 30 })), ["CLD ???????? ■■■■■■□□", "    ?        1h00m"]);
 	const noReset = single("claude", { "5h": 30 }); noReset.data!.windows["5h"]!.resetsAt = null;
 	assert.deepEqual(state(noReset), ["CLD ■■■■■■□□", "    ?"], "an unreported declared window leaves its slot blank");
@@ -1608,11 +1614,11 @@ test("USG states: pending, failed/timeout, none, unknown or blank window, stale 
 	assert.ok(tag.every((c) => c.fg === "graphic" && !c.bold), "stale tag is dimmed");
 	// Stale by age alone: older than 15 minutes (CodexBar's updatedAt, else receipt time).
 	const aged = single("codex", { wk: 50 }); aged.data!.updatedAt = NOW - 15 * 60_000;
-	assert.deepEqual(state(aged), ["CDX ■■■■□□□□", "    1h00m"], "exactly 15 minutes is fresh");
+	assert.deepEqual(state(aged), ["GPT ■■■■□□□□", "    1h00m"], "exactly 15 minutes is fresh");
 	aged.data!.updatedAt = NOW - 15 * 60_000 - 1;
-	assert.deepEqual(state(aged), ["CDX ■■■■□□□□", "16m 1h00m"]);
+	assert.deepEqual(state(aged), ["GPT ■■■■□□□□", "16m 1h00m"]);
 	aged.data!.updatedAt = null; aged.data!.fetchedAt = NOW - 2 * 86_400_000 - 5 * 3_600_000;
-	assert.deepEqual(state(aged), ["CDX ■■■■□□□□", "2d  1h00m"], "the age fits under the tag without widening it");
+	assert.deepEqual(state(aged), ["GPT ■■■■□□□□", "2d  1h00m"], "the age fits under the tag without widening it");
 	// Unknown is never success-shaped: no squares, no zero.
 	for (const provider of [{ provider: "codex" }, { provider: "claude", failure: "timeout" }, { provider: "kimi", failure: "failed" }] as UsageProviderState[]) {
 		assert.doesNotMatch(state(provider)[0], /[■□0]/);
@@ -1670,15 +1676,15 @@ test("USG wraps whole provider columns with their text rows; every line is bound
 				if (width >= 40) for (const line of lines) assert.equal(visibleWidth(line), width);
 			}
 			const lines = plain(renderFooter(f, width, theme));
-			if (width >= 16) for (const tag of ["CDX", "CLD", "KIM"]) assert.ok(lines.some((line) => line.includes(tag)), `${width}: ${tag} dropped`);
+			if (width >= 16) for (const tag of ["GPT", "CLD", "KMI"]) assert.ok(lines.some((line) => line.includes(tag)), `${width}: ${tag} dropped`);
 			// Text-row tokens start under their squares (or under the tag for the stale age).
 			const start = lines.findIndex((line) => line.includes("04 USG")), end = lines.findIndex((line) => line.includes("05 EXT"));
 			for (let i = start; i < end - 1; i++) {
 				// A split piece without text is followed directly by the next squares row, not a text row.
-				if (/CDX|CLD|KIM|[■□·]|\?{8}/.test(lines[i + 1])) continue;
+				if (/GPT|CLD|KMI|[■□·]|\?{8}/.test(lines[i + 1])) continue;
 				for (const token of lines[i + 1].matchAll(/[0-9a-z?]+/g)) {
 					const above = lines[i][token.index!];
-					if (above === undefined || !/[■□?·CK]/.test(above)) continue;
+					if (above === undefined || !/[■□?·CGK]/.test(above)) continue;
 					assert.ok(token.index === 0 || lines[i][token.index! - 1] === " ", `${width}: ${lines[i]} / ${lines[i + 1]}`);
 				}
 			}
@@ -1692,7 +1698,7 @@ test("USG minimal fallback splits groups wider than the line instead of clipping
 		const block = (f: FooterSnapshot) => { const lines = rows(f, width), start = lines.findIndex((line) => line.includes("USG")), end = lines.findIndex((line) => line.includes("EXT")); return lines.slice(start, end).join("\n"); };
 		const usg = block(withUsage());
 		assert.equal(usg.match(/[■□]/g)?.length, 40, `${width}: every square kept\n${usg}`);
-		for (const token of ["CDX", "CLD", "KIM", "6d2h", "1h15m", "5d15h", "3h09m", "6d12h"]) assert.ok(usg.includes(token), `${width}: ${token}\n${usg}`);
+		for (const token of ["GPT", "CLD", "KMI", "6d2h", "1h15m", "5d15h", "3h09m", "6d12h"]) assert.ok(usg.includes(token), `${width}: ${token}\n${usg}`);
 		const waiting = block(pending);
 		assert.equal(waiting.match(/[·?]/g)?.length, 40, `${width}: every pending or unknown cell kept\n${waiting}`);
 		assert.equal(waiting.match(/pending/g)?.length, 2, `${width}\n${waiting}`);
@@ -1737,13 +1743,13 @@ test("USG edge pulse: the highest lit square shrinks, dims and regrows over 150 
 	// One pulse, frame by frame: lit ▪, used ▪, used ■, settled lit ■. The count and countdown stay current.
 	const f = withUsage([single("codex", { wk: 50 })]), state = startMotion(f, 0, 1, false), settled = renderFooter(f, 100, theme);
 	const squares = (lines: string[]) => grid(lines)[6].filter((c) => "■□▪".includes(c.ch)).map((c) => `${c.ch}${c.fg}`);
-	const used = Array(4).fill("□codexUsed"), lit = ["■codex", "■codex", "■codex"];
-	for (const [at, edge] of [[3849, "■codex"], [3850, "▪codex"], [3899, "▪codex"], [3900, "▪codexUsed"], [3949, "▪codexUsed"], [3950, "■codexUsed"], [3999, "■codexUsed"], [4000, "■codex"]] as const) {
+	const used = Array(4).fill("□codexUsed"), lit = ["■text", "■text", "■text"];
+	for (const [at, edge] of [[3849, "■text"], [3850, "▪text"], [3899, "▪text"], [3900, "▪codexUsed"], [3949, "▪codexUsed"], [3950, "■codexUsed"], [3999, "■codexUsed"], [4000, "■text"]] as const) {
 		const lines = renderFooter(f, 100, theme, motionFrame(state, at));
 		assert.deepEqual(squares(lines), [...lit, edge, ...used], `${at} ms`);
 		assert.deepEqual(usg(lines)!.map((line) => line.replace("▪", "■")), usg(settled), `${at} ms: only the edge square's size changes`);
 	}
-	assert.deepEqual(squares(settled), [...lit, "■codex", ...used], "motion off holds a steady lit ■");
+	assert.deepEqual(squares(settled), [...lit, "■text", ...used], "motion off holds a steady lit ■");
 	assert.equal(visibleWidth("▪"), 1);
 });
 const EDGE = 150;
@@ -1751,7 +1757,7 @@ const EDGE = 150;
 test("USG ▪ appears only on a lit edge square during its pulse: never on used, pending, unknown, fill-in or burn-out cells", () => {
 	const unknown = single("kimi", { "5h": null, wk: 93 });
 	const lists: UsageProviderState[][] = [samples(), [{ provider: "codex" }, single("claude", { "5h": 0.5, wk: 99.9 }), unknown]];
-	// Slot columns at 100: CDX wk 15; CLD 5h 30, wk 39; KIM 5h 54, wk 63.
+	// Slot columns at 100: GPT wk 15; CLD 5h 30, wk 39; KMI 5h 54, wk 63.
 	const slot: Record<string, number> = { "codex/wk": 15, "codex/5h": 15, "claude/5h": 30, "claude/wk": 39, "kimi/5h": 54, "kimi/wk": 63 };
 	for (const list of lists) {
 		const f = withUsage(list);
@@ -1766,9 +1772,9 @@ test("USG ▪ appears only on a lit edge square during its pulse: never on used,
 			}
 			const actual = row.flatMap((c, x) => (c.ch === "▪" ? [x] : []));
 			assert.deepEqual(actual, expected.sort((a, b) => a - b), `${now} ms`);
-			// The row boot's fill-ins (and any burn-out) hold their windows' pulses off.
+			// The row boot, fill-ins and any burn-out hold their windows' pulses off.
 			for (const [key, effect] of Object.entries(frame.usage ?? {})) {
-				if (effect.edge !== undefined) assert.ok(frame.usageFill?.[key.split("/")[0] as UsageProviderState["provider"]] === undefined && !effect.burn, `${now} ms: ${key}`);
+				if (effect.edge !== undefined) assert.ok(frame.usageBoot === undefined && frame.usageFill?.[key.split("/")[0] as UsageProviderState["provider"]] === undefined && !effect.burn, `${now} ms: ${key}`);
 			}
 			seen += actual.length;
 		}, true);
@@ -1831,8 +1837,13 @@ test("USG is excluded from the footer boot, ghosts and re-strikes: only its own 
 		const { G } = metrics(width), inner = (line: string) => width >= 40 ? sliceByColumn(line, G, width - 2 * G) : line;
 		for (const frame of eventFrames(f)) {
 			const own = renderFooter(f, width, theme, frame);
-			// The edge pulse is the one glyph change, size only: ▪ is still a lit square.
-			for (const i of [at, at + 1]) assert.equal(stripTerminalSequences(inner(own[i])).replaceAll("▪", "■"), stripTerminalSequences(inner(settled[i])), `${width}: characters of row ${i}`);
+			// The edge pulse is the one glyph change, size only: ▪ is still a lit square. The row boot's draw-in leaves
+			// cells it has not reached blank, never another character.
+			for (const i of [at, at + 1]) {
+				const chars = [...stripTerminalSequences(inner(own[i])).replaceAll("▪", "■")], expected = [...stripTerminalSequences(inner(settled[i]))];
+				if (frame.usageBoot === undefined) assert.deepEqual(chars, expected, `${width}: characters of row ${i}`);
+				else assert.ok(chars.length === expected.length && chars.every((ch, x) => ch === expected[x] || ch === " "), `${width}: characters of row ${i}`);
+			}
 			const lines = renderFooter(f, width, theme, { ...frame, usage: undefined, usageBoot: undefined, usageFill: undefined });
 			for (const i of [at, at + 1]) assert.equal(inner(lines[i]), inner(settled[i]), `${width}: row ${i}`);
 		}
@@ -1856,7 +1867,7 @@ test("USG repaint delay: next countdown, stale-age or 15-minute change; none wit
 	assert.equal(at(-m, 14 * m), m + 1, "fresh data turns stale just after 15 minutes");
 });
 
-/* ---------- USG motion: row boot and per-provider fill-in (style only) ---------- */
+/* ---------- USG motion: row-boot draw-in and per-provider fill-in ---------- */
 
 // Only the USG decoration of a motion frame, so other ambient events cannot interfere with exact cell checks.
 const usgOnly = (frame: FooterFrame, effects = true): FooterFrame => ({ ...SETTLED_FRAME, usage: effects ? frame.usage : undefined, usageBoot: frame.usageBoot, usageFill: frame.usageFill });
@@ -1864,58 +1875,88 @@ const usgOnly = (frame: FooterFrame, effects = true): FooterFrame => ({ ...SETTL
 const SQUARES = 6, TEXT = 7;
 const cellAt = (g: TestCell[][], row: number, col: number) => { const c = g[row][col]; return `${c.ch}|${c.fg}|${c.bg}|${c.bold}`; };
 
-test("USG row boot when the row appears: plate polarity, staggered tag latches, column fill-in; characters current; settled in 1050 ms", () => {
-	const f = withUsage(), hidden = session(), at = 2000;
+// The row-boot draw-in, checked against the settled frame. Each USG line is measured in cells from its left edge
+// `left` (the plate's on the first line, the plate column's below it): content spans [from, end), the squares row's
+// front is (k + 1)·3 and the text row's k·3. Cells past the front are blank, the front's 3 cells are LOCKED with the
+// settled character, and cells behind it are settled; non-content cells are always blank.
+const LOCKED_CELL = (ch: string) => `${ch}|field|primary|true`;
+const blank = (c: TestCell | undefined) => c !== undefined && c.ch === " " && c.bg === "field";
+type UsgLine = { row: number; left: number; from: number; end: number; text: boolean };
+function usgLines(settled: string[], width: number): UsgLine[] {
+	const p = plain(settled).map((line) => line.replace(/[┃┏┓┗┛━]/g, " ")), framed = width >= 40, left = framed ? metrics(width).G : 0;
+	const start = p.findIndex((line) => line.includes("04 USG")), end = p.findIndex((line, i) => i > start && /05 EXT/.test(line));
+	return p.slice(start, end).map((line, i) => {
+		const text = !/GPT|CLD|KMI|USG|[■□·?]/.test(line), inner = line.slice(left, framed ? width - left : width);
+		// Framed lines below the first start at the plate column; the minimal layout's lead text row under its inline label.
+		const from = i === 0 ? 0 : framed || (i === 1 && text && /04 USG {2}\S/.test(p[start])) ? 9 : 0;
+		// The plate's line also carries the gap after it.
+		return { row: start + i, left, from, end: Math.max(inner.trimEnd().length, i === 0 ? 9 : 0), text };
+	});
+}
+function assertDrawIn(g: TestCell[][], settled: TestCell[][], lines: UsgLine[], k: number, width: number, label: string) {
+	for (const { row, left, from, end, text } of lines) {
+		const front = (text ? k : k + 1) * USAGE_SWEEP_CELLS_PER_TICK, right = width >= 40 ? width - left : width;
+		for (let x = 0; left + x < right; x++) {
+			const at = `${label} tick ${k} row ${row} x ${x}`, c = g[row][left + x];
+			if (x < from || x >= end || x >= front) assert.ok(blank(c), `${at}: blank, got ${JSON.stringify(c)}`);
+			else if (x >= front - USAGE_SWEEP_CELLS_PER_TICK) assert.equal(cellAt(g, row, left + x), LOCKED_CELL(settled[row][left + x].ch), `${at}: front`);
+			else assert.equal(cellAt(g, row, left + x), cellAt(settled, row, left + x), `${at}: settled`);
+		}
+	}
+}
+// The row-boot frame `k` ticks after a booting start, with only its USG decoration.
+const bootFrame = (f: FooterSnapshot, k: number) => usgOnly(motionFrame(startMotion(f, 0, 7, true), k * MOTION_TICK_MS));
+
+test("USG row boot draws the row in from the plate: LOCKED front, blank ahead, settled behind, text row one tick behind", () => {
+	const f = withUsage(), hidden = session(), at = 2000, sweep = USAGE_SWEEP_CELLS_PER_TICK;
+	// Plate 8 + gap + three 21-cell columns three apart (Codex with an undeclared window): 78 cells, 26 ticks, then the
+	// text row's lag.
+	assert.deepEqual([sweep, USAGE_BOOT_TICKS], [3, 27]);
 	let state = advanceMotion(startMotion(hidden, 0, 7, false), hidden, 1000);
 	assert.equal(state.usageBoot, undefined, "no row, no boot");
 	state = advanceMotion(state, f, at);
-	assert.equal(state.usageBoot, at);
-	assert.deepEqual(state.usageFill, { codex: at + 250, claude: at + 450, kimi: at + 650 }, "tags latch 4 ticks apart from tick 5");
+	assert.deepEqual([state.usageBoot, state.usageFill], [at, {}], "the draw-in is the boot: no per-provider fill-ins");
 	assert.equal(advanceMotion(state, f, at + 10), state, "re-rendering the same row never restarts it");
-	const settled = grid(renderFooter(f, 100, theme)), settledText = usg(renderFooter(f, 100, theme));
-	// Provider column, tag latch tick, slot starts and the text under each slot.
-	const columns = [{ tag: 11, latch: 5, slots: [15] }, { tag: 26, latch: 9, slots: [30, 39] }, { tag: 50, latch: 13, slots: [54, 63] }];
+	const settledLines = renderFooter(f, 100, theme), settled = grid(settledLines), lines = usgLines(settledLines, 100);
+	assert.deepEqual(lines.map(({ row, from, end, text }) => [row, from, end, text]), [[SQUARES, 0, 69, false], [TEXT, 9, 66, true]]);
 	const wakes: number[] = [];
-	for (let now = at; now <= at + 1200; now += nextMotionDelay(state, now)) { state = advanceMotion(state, f, now); wakes.push(now); }
-	for (let k = 0; k <= 21; k++) assert.ok(wakes.includes(at + k * MOTION_TICK_MS), `wake at tick ${k}`);
+	for (let now = at; now <= at + 1500; now += nextMotionDelay(state, now)) { state = advanceMotion(state, f, now); wakes.push(now); }
+	for (let k = 0; k <= USAGE_BOOT_TICKS; k++) assert.ok(wakes.includes(at + k * MOTION_TICK_MS), `wake at tick ${k}`);
 	state = advanceMotion(advanceMotion(startMotion(hidden, 0, 7, false), hidden, 1000), f, at);
-	for (let k = 0; k <= 23; k++) {
+	for (let k = 0; k <= USAGE_BOOT_TICKS + 1; k++) {
 		const now = at + k * MOTION_TICK_MS + 10;
 		state = advanceMotion(state, f, now);
-		// Edge pulses resume once a column settles; they are covered with the fill-in.
-		const lines = renderFooter(f, 100, theme, usgOnly(motionFrame(state, now), false)), g = grid(lines);
-		assert.deepEqual(usg(lines), settledText, `tick ${k}: characters and values are current`);
-		const plate = g[SQUARES].slice(2, 10);
-		assert.ok(plate.every((c) => (k < 2 ? c.fg === "plate" && c.bg === "text" : c.fg === "text" && c.bg === "plate") && c.bold), `tick ${k}: plate polarity`);
-		for (const { tag, latch, slots } of columns) {
-			for (let x = tag; x < tag + 3; x++) {
-				if (k < latch) assert.ok(g[SQUARES][x].fg === "secondary" && g[SQUARES][x].bg === "surface", `tick ${k}: tag ${tag} waits on the band`);
-				else assert.equal(cellAt(g, SQUARES, x), cellAt(settled, SQUARES, x), `tick ${k}: tag ${tag} latched`);
-			}
-			for (const slot of slots) {
-				for (let j = 0; j < 8; j++) {
-					const c = g[SQUARES][slot + j];
-					if (k < latch + j) assert.equal(c.fg, "graphic", `tick ${k}: ${slot}+${j} waits grey`);
-					else if (k === latch + j) assert.equal(c.fg, "text", `tick ${k}: ${slot}+${j} white`);
-					else assert.equal(cellAt(g, SQUARES, slot + j), cellAt(settled, SQUARES, slot + j), `tick ${k}: ${slot}+${j} settled`);
-				}
-				const below = g[TEXT][slot];
-				assert.equal(below.fg, k < latch + 7 ? "graphic" : "secondary", `tick ${k}: text under ${slot}`);
-			}
-		}
-		if (k >= 21) assert.deepEqual([g[SQUARES], g[TEXT]], [settled[SQUARES], settled[TEXT]], `tick ${k}: settled`);
+		const frame = motionFrame(state, now), rendered = renderFooter(f, 100, theme, usgOnly(frame)), g = grid(rendered);
+		assert.equal(frame.usageBoot, k < USAGE_BOOT_TICKS ? k : undefined, `tick ${k}`);
+		if (k < USAGE_BOOT_TICKS) assert.equal(frame.usage, undefined, `tick ${k}: no edge pulse or burn-out during the boot`);
+		// Rows outside USG are untouched; inside it every cell is blank or its settled character.
+		g.forEach((row, r) => {
+			if (r !== SQUARES && r !== TEXT) assert.deepEqual(row, settled[r], `tick ${k}: row ${r}`);
+			else row.forEach((c, x) => assert.ok(c.ch === settled[r][x].ch || blank(c), `tick ${k}: ${r}/${x} ${c.ch}`));
+		});
+		if (k < USAGE_BOOT_TICKS) assertDrawIn(g, settled, lines, k, 100, "100");
+		else assert.deepEqual([g[SQUARES], g[TEXT]], [settled[SQUARES], settled[TEXT]], `tick ${k}: settled`);
 	}
-	const done = motionFrame(state, at + 1050);
-	assert.deepEqual([done.usageBoot, done.usageFill], [undefined, undefined], "complete within 1050 ms");
+	// Tick 0: the plate's first three cells latch first; nothing else is drawn, and the text row is still blank.
+	const first = grid(renderFooter(f, 100, theme, bootFrame(f, 0)));
+	assert.deepEqual(first[SQUARES].slice(2, 5).map((c, x) => cellAt(first, SQUARES, 2 + x)), [" ", "0", "4"].map(LOCKED_CELL));
+	assert.ok([...first[SQUARES].slice(5, 98), ...first[TEXT].slice(2, 98)].every(blank), "beyond the front: blank");
+	// The text row trails by one tick: at tick 5 the squares front is x 15–17 and the text row's x 12–14.
+	const locked = (row: TestCell[]) => row.flatMap((c, x) => (c.bg === "primary" ? [x - 2] : []));
+	const fifth = grid(renderFooter(f, 100, theme, bootFrame(f, 5)));
+	assert.deepEqual([locked(fifth[SQUARES]), locked(fifth[TEXT])], [[15, 16, 17], [12, 13, 14]]);
+	assert.deepEqual(text(fifth[SQUARES]).slice(2, 20), " 04 USG  GPT ■■■■■", "drawn cells carry their current characters");
+	// The whole row is settled when the boot ends.
 	assert.deepEqual([state.usageBoot, state.usageFill], [undefined, {}]);
 	// Hidden (CodexBar removed) then shown again boots again.
 	state = advanceMotion(state, hidden, 5000);
 	assert.deepEqual([state.usageShown, state.usageBoot, state.usageFill], [false, undefined, {}]);
 	state = advanceMotion(state, f, 6000);
-	assert.deepEqual([state.usageBoot, state.usageFill], [6000, { codex: 6250, claude: 6450, kimi: 6650 }]);
-	// Present at a booting start: the same schedule from that start, alongside the footer boot.
+	assert.deepEqual([state.usageBoot, state.usageFill], [6000, {}]);
+	assert.equal(motionFrame(state, 6000).usageBoot, 0);
+	// Present at a booting start: the same draw-in from that start, alongside the footer boot.
 	const boot = startMotion(f, 100, 7, true);
-	assert.deepEqual([boot.usageBoot, boot.usageFill], [100, { codex: 350, claude: 550, kimi: 750 }]);
+	assert.deepEqual([boot.usageBoot, boot.usageFill], [100, {}]);
 	assert.equal(motionFrame(boot, 100).usageBoot, 0);
 	// Motion off renders settled; resuming never replays a boot that would have happened while it was off.
 	assert.deepEqual(grid(renderFooter(f, 100, theme)).slice(SQUARES, TEXT + 1), settled.slice(SQUARES, TEXT + 1));
@@ -1923,6 +1964,93 @@ test("USG row boot when the row appears: plate polarity, staggered tag latches, 
 	assert.deepEqual([resumed.usageBoot, resumed.usageFill, frame.usageBoot, frame.usageFill], [undefined, {}, undefined, undefined]);
 	// An empty provider list is no row.
 	assert.equal(advanceMotion(startMotion(hidden, 0, 7, false), withUsage([]), 100).usageBoot, undefined);
+});
+
+test("USG row boot sweeps every wrapped line (48 columns) and minimal-layout line by x within it", () => {
+	const lists: UsageProviderState[][] = [samples(), [{ provider: "codex" }, { provider: "claude" }, samples()[2]]];
+	for (const list of lists) {
+		const f = withUsage(list);
+		for (const width of [48, 39, 30, 21, 16]) {
+			const settledLines = renderFooter(f, width, theme), settled = grid(settledLines), lines = usgLines(settledLines, width);
+			if (width === 48) assert.deepEqual(lines.map(({ from, text }) => [from, text]), [[0, false], [9, true], [9, false], [9, true]], "a continuation line starts at the plate column");
+			if (width === 30) assert.deepEqual(lines.map(({ from, text }) => [from, text]), [[0, false], [9, true], [0, false], [0, true], [0, false], [0, true]], "minimal lines start at their own left edge");
+			for (let k = 0; k < USAGE_BOOT_TICKS; k++) {
+				const g = grid(renderFooter(f, width, theme, bootFrame(f, k)));
+				assertDrawIn(g, settled, lines, k, width, String(width));
+				g.forEach((row, r) => { if (!lines.some((line) => line.row === r)) assert.deepEqual(row, settled[r], `${width} tick ${k}: row ${r}`); });
+			}
+			assert.deepEqual(grid(renderFooter(f, width, theme, bootFrame(f, USAGE_BOOT_TICKS))), settled, `${width}: settled when the boot ends`);
+		}
+	}
+	// Wrapped lines draw in at the same time as the first: the continuation's tag is reached on the same tick as GPT.
+	const f = withUsage(), at48 = (k: number) => plain(renderFooter(f, 48, theme, bootFrame(f, k)));
+	assert.deepEqual([at48(2)[8].slice(1, 14), at48(2)[10].slice(1, 14)], [" 04 USG      ", "             "]);
+	assert.deepEqual([at48(3)[8].slice(1, 14), at48(3)[10].slice(1, 14)], [" 04 USG  GPT ", "         KMI "]);
+	// The minimal layout's own lines start at x = 0: CLD and KMI are reached on tick 0, before GPT beside the label.
+	const at30 = (k: number) => plain(renderFooter(f, 30, theme, bootFrame(f, k)));
+	const start = at30(USAGE_BOOT_TICKS).findIndex((line) => line.includes("04 USG"));
+	assert.deepEqual(at30(0).slice(start, start + 6).map((line) => line.trimEnd()), [" 04", "", "CLD", "", "KMI", ""]);
+});
+
+test("USG row boot frames stay width-bounded at every width 1..280 on every tick", () => {
+	for (const list of [samples(), [{ provider: "codex" }, { provider: "claude", failure: "timeout" }, { provider: "kimi", data: { windows: {}, updatedAt: NOW, fetchedAt: NOW } }]] as UsageProviderState[][]) {
+		const f = withUsage(list);
+		for (let k = 0; k <= USAGE_BOOT_TICKS; k++) {
+			const frame = bootFrame(f, k);
+			for (let width = 1; width <= 280; width++) {
+				for (const line of renderFooter(f, width, theme, frame)) {
+					if (width >= 40) assert.equal(visibleWidth(line), width, `tick ${k} width ${width}`);
+					else assert.ok(visibleWidth(line) <= width, `tick ${k} width ${width}: ${JSON.stringify(line)}`);
+				}
+			}
+		}
+	}
+});
+
+test("USG row boot holds edge pulses and burn-outs off; data during it is drawn current without a fill-in; later data fills in", () => {
+	const sweep = USAGE_SWEEP_CELLS_PER_TICK, end = USAGE_BOOT_TICKS * MOTION_TICK_MS;
+	// Codex at 0.1% remaining pulses every 627.2 ms, first at 477 ms: inside the boot.
+	const draining = withUsage([single("codex", { wk: 99.9 })]);
+	assert.notEqual(motionFrame(startMotion(draining, 0, 5, false), 500).usage?.["codex/wk"]?.edge, undefined, "without a boot it pulses at 500 ms");
+	let state = startMotion(draining, 0, 5, true);
+	for (let now = 0; now < end; now += 10) assert.equal(motionFrame(state, now).usage, undefined, `${now} ms: held during the boot`);
+	state = advanceMotion(state, draining, end);
+	assert.notEqual(motionFrame(state, 1750).usage?.["codex/wk"]?.edge, undefined, "pulses resume on their period after the boot");
+	// A drop during the boot starts no burn-out and is drawn at its current value; after the boot a drop burns.
+	const sample = (used: number, stamp: number) => withUsage([single("claude", { "5h": used }, {}, 3_600_000, stamp)]);
+	state = advanceMotion(startMotion(sample(10, 1), 0, 5, true), sample(50, 2), 300);
+	assert.deepEqual([state.usageBurns, state.usageFill], [{}, {}]);
+	const k = 15, row = grid(renderFooter(sample(50, 2), 100, theme, usgOnly(motionFrame(state, k * MOTION_TICK_MS))))[SQUARES];
+	assert.equal(text(row).slice(15, 23), "■■■■□□□□", "behind the front: the current squares");
+	state = advanceMotion(state, sample(50, 2), end);
+	assert.equal(state.usageBoot, undefined);
+	assert.deepEqual(Object.keys(advanceMotion(state, sample(70, 3), end + 500).usageBurns), ["claude/5h"]);
+	// Data arriving during the boot gets no fill-in, then or after it; it is drawn current when the front reaches it.
+	const [, , kimi] = samples(), claude = single("claude", { "5h": 50, wk: 70 });
+	const before = withUsage([{ provider: "codex" }, { provider: "claude" }, kimi]), after = withUsage([{ provider: "codex" }, claude, kimi]);
+	state = advanceMotion(startMotion(before, 0, 5, true), after, 300);
+	assert.deepEqual(state.usageFill, {});
+	const settled = grid(renderFooter(after, 100, theme));
+	for (let tick = 6; tick < USAGE_BOOT_TICKS; tick++) {
+		const now = tick * MOTION_TICK_MS;
+		state = advanceMotion(state, after, now);
+		const frame = motionFrame(state, now), g = grid(renderFooter(after, 100, theme, usgOnly(frame)));
+		assert.equal(frame.usageFill, undefined, `tick ${tick}`);
+		// Claude's columns (x 26–46 from the plate) behind the front carry their settled ink, never the fill-in grey.
+		for (let x = 26; x < Math.min(47, (tick + 1) * sweep - sweep); x++) assert.equal(cellAt(g, SQUARES, x + 2), cellAt(settled, SQUARES, x + 2), `tick ${tick}: x ${x}`);
+	}
+	state = advanceMotion(state, after, end);
+	assert.deepEqual([state.usageBoot, state.usageFill], [undefined, {}]);
+	assert.deepEqual(advanceMotion(state, after, end + 500).usageFill, {}, "no fill-in is queued for after the boot");
+	// Data that first arrives after the boot fills in from then, exactly as before: per cell grey, white on its tick.
+	let late = advanceMotion(startMotion(before, 0, 5, true), before, end);
+	late = advanceMotion(late, after, end + 100);
+	assert.deepEqual([late.usageBoot, late.usageFill], [undefined, { claude: end + 100 }]);
+	const g = grid(renderFooter(after, 100, theme, usgOnly(motionFrame(late, end + 100 + 2 * MOTION_TICK_MS), false)));
+	for (const slot of [30, 39]) {
+		assert.deepEqual([0, 1].map((j) => cellAt(g, SQUARES, slot + j)), [0, 1].map((j) => cellAt(settled, SQUARES, slot + j)), `${slot}: latched`);
+		assert.deepEqual([g[SQUARES][slot + 2].fg, g[SQUARES][slot + 3].fg, g[TEXT][slot].fg], ["text", "graphic", "graphic"], `${slot}: white, grey, waiting text`);
+	}
 });
 
 test("USG fill-in when a provider's data first arrives: per cell grey, white for one tick, settled; windows in parallel; no restart", () => {
@@ -1979,13 +2107,8 @@ test("USG fill-in when a provider's data first arrives: per cell grey, white for
 	const failing = withUsage([{ provider: "codex" }, { provider: "claude", failure: "timeout" }, kimi]);
 	assert.deepEqual(advanceMotion(advanceMotion(startMotion(failing, 0, 5, false), failing, 50), after, 100).usageFill, { claude: 100 });
 	const keeps = withUsage([{ provider: "codex" }, { ...claude, failure: "failed" }, kimi]);
-	let cycle = advanceMotion(advanceMotion(startMotion(after, 0, 5, false), keeps, 100), after, 200);
+	const cycle = advanceMotion(advanceMotion(startMotion(after, 0, 5, false), keeps, 100), after, 200);
 	assert.deepEqual(cycle.usageFill, {}, "a provider that kept its data never refills");
-	// Data arriving during a row boot: ahead of the column's latch keeps the schedule; after it, restarts from now.
-	cycle = startMotion(before, 0, 5, true);
-	assert.equal(cycle.usageFill.claude, 450);
-	assert.equal(advanceMotion(cycle, after, 300).usageFill.claude, 450);
-	assert.equal(advanceMotion(advanceMotion(cycle, before, 500), after, 520).usageFill.claude, 520);
 	// Motion off is settled; resuming does not fill in.
 	assert.deepEqual(grid(renderFooter(after, 100, theme, SETTLED_FRAME)).slice(SQUARES, TEXT + 1), settled.slice(SQUARES, TEXT + 1));
 	assert.deepEqual(startMotion(after, 9000, 5, false).usageFill, {});
