@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { inspectPullRequest, inspectWorkspace, resolveActivePath } from '../src/workspace.ts';
 import type { GithubRepository, WorkspaceInfo } from '../src/workspace.ts';
@@ -360,6 +361,27 @@ test('PR auth, access, validation, rate-limit, network and cancellation stay una
     assert.match(JSON.stringify(await pending), /cancelled/);
   });
 }));
+
+test('aborting a lookup whose spawn failed (ENOENT) never signals the caller process group', async () => {
+  // Node 22.23 signals pid 0 when execFile's own signal aborts a failed spawn. Run in a detached
+  // process group so a regression kills only that probe, not the test runner.
+  const empty = await mkdtemp(join(tmpdir(), 'pi-workspace-empty-'));
+  const script = `import { inspectPullRequest } from ${JSON.stringify(pathToFileURL(resolve('src/workspace.ts')).href)};
+const controller = new AbortController();
+const pending = inspectPullRequest(${JSON.stringify(repository)}, 'feature/safe', { signal: controller.signal });
+controller.abort();
+console.log(JSON.stringify(await pending));
+await new Promise((done) => setTimeout(done, 300));
+console.log('survived');`;
+  try {
+    const child = spawn(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', script], { env: { ...process.env, PATH: empty }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    const [code, signal] = await new Promise<[number | null, string | null]>((done) => child.on('close', (...result) => done(result as [number | null, string | null])));
+    assert.deepEqual([code, signal], [0, null], output);
+    assert.equal(output, '{"kind":"unavailable","reason":"gh lookup cancelled"}\nsurvived\n');
+  } finally { await rm(empty, { recursive: true, force: true }); }
+});
 
 test('GitHub timeout is unavailable, never no-open-PR', async () => fixture(async (f) => {
   await mock(f, 'gh', 'setTimeout(()=>{},20000);', async () => {
