@@ -610,7 +610,10 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 		if (!state.tatsu) set("tatsuWarm", booting(next, now) ? Math.max(now, next.boot!.at + BOOT_AT.ext * TICK) : now);
 		if (tatsu.phase === "completed") {
 			for (const c of tatsu.components) {
-				const previous = state.tatsuCompleted?.components.find((p) => p.component === c.component);
+				// Compare with the last completed result; with none yet, a component shown as CHK is the baseline, so its
+				// first result latches too. First discovery straight from absent/inactive still settles without playing.
+				const previous = state.tatsuCompleted?.components.find((p) => p.component === c.component)
+					?? state.tatsu?.components.find((p) => p.component === c.component && p.state === "checking");
 				if (previous && tatsuKey(previous) !== tatsuKey(c)) {
 					delete latches[c.component];
 					if (c.state !== "inactive" && previous.state !== "inactive" && !booting(next, now) && next.tatsuWarm === undefined) latches[c.component] = now;
