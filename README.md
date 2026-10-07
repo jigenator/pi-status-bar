@@ -7,7 +7,7 @@ It shows, in a framed Marathon-inspired “Acid / Black” instrument panel with
 - a **CMP** plate that always leads the frame title with the selected session branch's successful compaction count (`CMP×00`–`CMP×99`, `CMP×99+` above 99, `CMP×??` when unknown), followed by an acid `■` and the GitHub `owner/repository` with open-pull-request state when available;
 - the agent-reported **Active** project: in a GitHub repository on a branch, just a grey `⑂` and branch name followed by bold colored `clean`, `modified` or `status unavailable` text; otherwise its parent/current directory, for example `Projects/pi-status-bar`, with any Git details (including detached checkouts) on an unnumbered row below;
 - a plain grey `cwd` line above Active naming Pi's working directory, where tools run and project instructions were loaded from, only when it differs from Active;
-- a graduated context gauge with 70%/90% thresholds, an inline context-token readout such as `84k/200k` and, at 100+ columns, a large percentage numeral;
+- a graduated context gauge with 70%/90% thresholds, an inline context-token readout such as `84k/184k` and, at 100+ columns, a large percentage numeral. All of them measure against the auto-compaction budget, the context window minus Pi's `compaction.reserveTokens` (a `compaction.modelOverrides` entry for the current model wins; the default is 16384), so a full gauge means Pi is about to compact. With `compaction.enabled: false` they measure the full window;
 - the model and thinking level, a white **⌑ PNYTL //** mode plate, plus statuses from other extensions (recognized Ponytail text is represented once by its plate);
 - a **ROOT** working lamp and an independent **AU (Active Units)** badge from the optional public pi-subagents fleet API.
 

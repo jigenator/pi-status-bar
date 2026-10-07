@@ -594,6 +594,29 @@ test("context: true zero, real fill, >70 warning, >90 high, unknown, nonfinite, 
 	assert.ok(narrow.some((line) => /^ {9,}2\.5M\/10\.0M/.test(line)), narrow.join("\n"));
 });
 
+test("context: compaction reserve rescales gauge, numeral, thresholds and readout to the auto-compaction budget", () => {
+	const lit = (lines: string[], width = 72) => gaugeOf(lines, width).filter((c) => ["primary", "warn", "high"].includes(c.bg)).length;
+	const f = fixture(); f.contextUsage = { tokens: 300_000, contextWindow: 1_000_000, percent: 30 }; f.compactionReserve = 600_000;
+	const cells = gaugeOf(renderFooter(f, 72, theme), 72).length;
+	assert.equal(text(gaugeOf(renderFooter(f, 72, theme), 72).slice(0, 11)), " 300k/400k ", "readout is over the budget, in its unit");
+	assert.equal(lit(renderFooter(f, 72, theme)), Math.ceil((75 * cells) / 100), "fill is the share of the budget");
+	assert.match(plain(renderFooter(f, 72, theme)).join("\n"), /▲ WARN/, "75% of the budget crosses the 70 mark");
+	const wide = plain(renderFooter(f, 100, theme)).join("\n");
+	assert.match(wide, /▐ ▀▀█ █▀▀   █▀█ %/, "numeral is 75.0% of the budget"); assert.match(wide, /USED[^\n]*\n[^\n]*of 400k/, "caption names the budget");
+	f.contextUsage = { tokens: 120_000, contextWindow: 128_000, percent: 93.75 }; f.compactionReserve = 16_384;
+	assert.match(plain(renderFooter(f, 72, theme)).join("\n"), / 120k\/112k .*▲ HIGH/, "over the budget is shown as-is");
+	assert.equal(lit(renderFooter(f, 72, theme)), cells, "graphical extent clamps");
+	f.contextUsage = { tokens: null, contextWindow: 128_000, percent: null };
+	assert.match(plain(renderFooter(f, 72, theme)).join("\n"), / \?\/112k .*\? UNKNOWN/, "unknown tokens stay unknown");
+	f.contextUsage = { tokens: 32_000, contextWindow: 128_000, percent: 25 };
+	for (const reserve of [undefined, 128_000, 200_000, -1, Number.NaN]) {
+		f.compactionReserve = reserve;
+		assert.match(plain(renderFooter(f, 72, theme)).join("\n"), / 32k\/128k /, `reserve ${reserve} leaves the full window`);
+	}
+	f.compactionReserve = 0;
+	assert.match(plain(renderFooter(f, 72, theme)).join("\n"), / 32k\/128k /, "a zero reserve is the full window");
+});
+
 // Named by default, so a known branch replaces the path; pass false to keep the path with its Git details.
 const hostile = (named = true) => {
 	const f = fixture();

@@ -25,6 +25,8 @@ export type FooterSnapshot = {
 	ponytailActive?: boolean;
 	/** Successful persisted compactions on the selected branch. Absent, null or invalid is unknown, never zero. */
 	compactions?: number | null;
+	/** Pi's effective compaction reserve for the model; absent when auto-compaction is off or the setting is unusable. */
+	compactionReserve?: number;
 };
 /** Pi's theme converts these concrete colors for truecolor or 256-color terminals. */
 export type FooterTheme = Pick<Theme, "style" | "getColorMode">;
@@ -134,11 +136,14 @@ const cmpStyle = (count: number | undefined): Style => ({
 function compact(count: number, unit = count): string {
 	return unit >= 1_000_000 ? `${(count / 1_000_000).toFixed(1)}M` : unit >= 1_000 ? `${(count / 1_000).toFixed(0)}k` : `${count}`;
 }
-// Context values shared by rendering and motion memory.
+// Context values shared by rendering and motion memory. Pi auto-compacts above
+// window − reserve, so that budget (when positive) is the gauge's 100%.
 function contextOf(snapshot: FooterSnapshot) {
-	const usage = snapshot.contextUsage;
-	const percent = finite(usage?.percent), tokens = finite(usage?.tokens);
-	const windowSize = [usage?.contextWindow, snapshot.model?.contextWindow].find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
+	const usage = snapshot.contextUsage, tokens = finite(usage?.tokens), reserve = knownCount(snapshot.compactionReserve);
+	const fullWindow = [usage?.contextWindow, snapshot.model?.contextWindow].find((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
+	const budget = fullWindow !== undefined && reserve !== undefined && reserve < fullWindow ? fullWindow - reserve : undefined;
+	const windowSize = budget ?? fullWindow;
+	const percent = budget === undefined ? finite(usage?.percent) : tokens === undefined ? undefined : (tokens * 100) / budget;
 	return { percent, tone: toneOf(percent), windowText: windowSize ? compact(windowSize) : "", tokensText: tokens === undefined ? "?" : compact(tokens, windowSize) };
 }
 const panelLabels = (percent: number | undefined, windowText: string) =>
