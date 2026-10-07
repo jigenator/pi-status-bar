@@ -21,6 +21,8 @@ export type FooterSnapshot = {
 	activity?: FooterActivity;
 	/** Optional for renderer compatibility; the native adapter always supplies a state. */
 	ponytail?: PonytailState;
+	/** Ponytail's own activity dot (● while the agent runs a turn); lights the plate only with a confirmed enabled mode. */
+	ponytailActive?: boolean;
 	/** Successful persisted compactions on the selected branch. Absent, null or invalid is unknown, never zero. */
 	compactions?: number | null;
 };
@@ -89,6 +91,7 @@ const PONYTAIL: Record<PonytailState, { code: string; ink: Hue }> = {
 };
 const confirmedPonytail = (value: PonytailState | undefined): PonytailMode | undefined =>
 	value === "checking" || value === "unknown" ? undefined : value;
+const ponytailLit = (snapshot: FooterSnapshot) => snapshot.ponytailActive === true && confirmedPonytail(snapshot.ponytail) !== undefined && snapshot.ponytail !== "off";
 const RESET = "\x1b[0m";
 
 export type Tone = "ok" | "warn" | "high" | "unknown";
@@ -260,6 +263,7 @@ export type MotionState = Readonly<{
 	/** Retained by the adapter across decoration/component resets. */
 	ponytailGuardUntil: number;
 	ponytailBurst?: { at: number; masks: readonly [number, number] };
+	ponytailActive: boolean;
 }>;
 /** Everything the renderer needs for one decoration frame; values are never part of it. */
 export type FooterFrame = Readonly<{
@@ -307,6 +311,7 @@ export function startMotion(snapshot: FooterSnapshot, now: number, seed: number,
 		strikeAt: now + Math.max(ghostDelay, between(r, STRIKE_WAIT) * 0.5),
 		working: snapshot.activity?.working === true,
 		units: knownCount(snapshot.activity?.units) ?? 0,
+		ponytailActive: ponytailLit(snapshot),
 	};
 	return { ...state, cursor: r.cursor };
 }
@@ -370,6 +375,7 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 	}
 	set("working", snapshot.activity?.working === true);
 	set("units", knownCount(snapshot.activity?.units) ?? 0);
+	set("ponytailActive", ponytailLit(snapshot));
 
 	// Start due events; none run during boot. A late timer keeps the planned start when within one tick.
 	if (!booting(next, now)) {
@@ -434,6 +440,8 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 
 // The lamp blinks 500 ms acid / 300 ms dim; each visible unit mark shuttles on its own period.
 const lampOn = (pulse: number) => pulse % 16 < 10;
+// Ponytail's light blinks 200 ms on / 200 ms off: 2.5 a second, faster than ROOT and under three flashes a second.
+const lightOn = (pulse: number) => pulse % 8 < 4;
 const markSide = (pulse: number, q: number) => Math.floor((pulse + q * 3) / (4 + ((q * 2) % 5))) % 2;
 
 /** Milliseconds until the decoration can next change or an event is due. Call only while motion is on. */
@@ -457,9 +465,9 @@ export function nextMotionDelay(state: MotionState, now: number): number {
 		if (calAt(k) !== calAt(k - 1)) { due = Math.min(due, state.epoch + k * TICK); break; }
 	}
 	const marks = Math.min(PULSE_CAP, state.units);
-	if (state.working || marks) {
+	if (state.working || marks || state.ponytailActive) {
 		for (let k = tick + 1; k <= tick + 32; k++) {
-			let moved = state.working && lampOn(k) !== lampOn(k - 1);
+			let moved = (state.working && lampOn(k) !== lampOn(k - 1)) || (state.ponytailActive && lightOn(k) !== lightOn(k - 1));
 			for (let q = 0; q < marks && !moved; q++) moved = markSide(k, q) !== markSide(k - 1, q);
 			if (moved) { due = Math.min(due, state.epoch + k * TICK); break; }
 		}
@@ -758,7 +766,10 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		+ word(" · ", { fg: "secondary", bg: band }, -1) + word("thinking ", { fg: "secondary", bg: band }, 2) + word(safeText(snapshot.thinking), { fg: "primary", bold: true, bg: band }, 3);
 	// Pre-styled run: never eligible for ambient ghosts/re-strikes or boot restyling.
 	const ponytail = snapshot.ponytail && PONYTAIL[snapshot.ponytail];
-	const ponytailPlate = ponytail ? gap() + paint(" ⌑ PNYTL // ", { fg: "field", bg: "text", bold: true })
+	// While Ponytail reports activity the icon alternates with a small pink light (the CMP pink); motion off holds it lit.
+	const lit = ponytailLit(snapshot) && (frame.pulse === null || lightOn(frame.pulse));
+	const ponytailPlate = ponytail ? gap() + paint(" ", { fg: "field", bg: "text", bold: true })
+		+ paint(lit ? "•" : "⌑", { fg: lit ? "pink" : "field", bg: "text", bold: true }) + paint(" PNYTL // ", { fg: "field", bg: "text", bold: true })
 		+ [...ponytail.code].map((ch, i) => paint(ch, { fg: confirmedPonytail(snapshot.ponytail) && snapshot.ponytail !== "off" && ((frame.ponytailMask ?? 0) & (1 << i)) ? "field" : ponytail.ink, bg: "text", bold: true })).join("")
 		+ paint(" ", { fg: "field", bg: "text", bold: true }) + gap() : "";
 	const mode = theme.getColorMode();
