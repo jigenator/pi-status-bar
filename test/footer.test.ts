@@ -139,6 +139,9 @@ const PALETTE: Record<string, string> = {
 	"#2555fc": "kimi", "#071132": "kimiUsed", "#132b7e": "kimiMid",
 	// Tatsu checking fade (above graphic grey) and beacon dim.
 	"#7b7b7b": "checkLow", "#868686": "checkMid", "#919191": "checkHigh", "#9c9c9c": "checkPeak", "#6c4f29": "warnDim",
+	// Tatsu warm-up steps (warn 50% is warnDim; grey's are surface and plate).
+	"#304001": "primary25", "#607f02": "primary50", "#90be03": "primary75", "#362814": "warn25", "#a1763e": "warn75",
+	"#3c1209": "high25", "#792412": "high50", "#b6351a": "high75", "#383838": "graphic50",
 };
 const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";");
 const bg = (hex: string) => `\x1b[48;2;${rgb(hex)}m`, fg = (hex: string) => `\x1b[38;2;${rgb(hex)}m`;
@@ -2283,7 +2286,7 @@ test("Tatsu: sorted placement, raw inactive fallback, breaks between components,
 	// Alone in EXT, the first component sits beside the label when it fits.
 	const alone = rows(tatsuFixture("behind", "current", { commitsBehind: 1 }), 30), label = alone.findIndex((line) => line.includes("05 EXT"));
 	assert.equal(alone[label].trimEnd(), " 05 EXT  TCLI ▲ UP×1"); assert.equal(alone[label + 1].trimEnd(), "AWKS • OK");
-	const frames: FooterFrame[] = [SETTLED_FRAME, { ...SETTLED_FRAME, tatsuBoot: 2 }, { ...SETTLED_FRAME, tatsuCheck: 4 }, { ...SETTLED_FRAME, tatsuLatches: { "tatsu-cli": 1 } }, { ...SETTLED_FRAME, tatsuBeacon: 1 }];
+	const frames: FooterFrame[] = [SETTLED_FRAME, { ...SETTLED_FRAME, tatsuWarm: 2 }, { ...SETTLED_FRAME, tatsuWarm: -3 }, { ...SETTLED_FRAME, tatsuCheck: 4 }, { ...SETTLED_FRAME, tatsuLatches: { "tatsu-cli": 1 } }, { ...SETTLED_FRAME, tatsuBeacon: 1 }];
 	for (const f of [tatsuFixture("behind", "repair", { commitsBehind: Number.MAX_SAFE_INTEGER, localChanges: true }), tatsuFixture("checking", "checking"), tatsuFixture("missing", "not_runnable"), tatsuFixture("inactive", "local_changes")]) {
 		for (const frame of frames) for (let width = 1; width <= 280; width++) {
 			const lines = renderFooter(f, width, theme, frame);
@@ -2293,29 +2296,47 @@ test("Tatsu: sorted placement, raw inactive fallback, breaks between components,
 	}
 });
 
-test("Tatsu: draw-in reuses USG's three-cell LOCKED front; appearance/reappearance, footer boot and resume", () => {
-	const absent = { ...tatsuFixture(), tatsu: undefined }, f = tatsuFixture();
+test("Tatsu: warm-up brightens each part out of the field, colour only; appearance/reappearance, reload and resume", () => {
+	const absent = { ...tatsuFixture(), tatsu: undefined }, f = tatsuFixture("behind", "current", { commitsBehind: 1 }), at = tatsuSpans(4, 2);
+	const settledCells = tatsuCells(f), settled = text(settledCells);
+	assert.equal(footer.TATSU_WARM_TICKS, 14, "700 ms for both components");
 	let state = startMotion(absent, 0, 14, false);
 	state = advanceMotion(state, f, 2000);
-	const natural = 2 * "TCLI • OK".length + 3, settledCells = tatsuCells(f), settled = text(settledCells).slice(0, natural);
-	assert.equal(state.tatsuBoot?.ticks, Math.ceil(natural / 3), "the front reaches the last cell on the final tick");
-	for (let k = 0; k < state.tatsuBoot!.ticks; k++) {
-		const frame = motionFrame(state, 2000 + k * 50), cells = tatsuCells(f, frame), front = (k + 1) * 3;
-		assert.equal(text(cells).slice(0, Math.min(front, natural)), settled.slice(0, front));
-		assert.ok(cells.slice(front).every((c) => c.ch === " " && c.bg === "field"), "cells ahead of the front are blank field");
-		assert.ok(cells.slice(Math.max(0, front - 3), Math.min(front, natural)).every((c) => c.fg === "field" && c.bg === "primary" && c.bold));
-		assert.deepEqual(cells.slice(0, Math.max(0, front - 3)), settledCells.slice(0, Math.max(0, front - 3)), "cells behind the front are settled");
+	assert.equal(state.tatsuWarm, 2000);
+	// Steps: field, 25%, 50%, 75%, then the settled colour, two ticks each; shape, code (+2), label (+4); AWKS 3 ticks later.
+	const steps = { warn: ["field", "warn25", "warnDim", "warn75", "warn"], primary: ["field", "primary25", "primary50", "primary75", "primary"], graphic: ["field", "surface", "graphic50", "plate", "graphic"] } as const;
+	const expect = (ink: keyof typeof steps, k: number, component: number, role: number) => steps[ink][Math.min(4, Math.max(0, Math.floor((k - component * 3 - role) / 2) + 1))];
+	for (let k = 0; k < footer.TATSU_WARM_TICKS; k++) {
+		const frame = motionFrame(state, 2000 + k * 50), cells = tatsuCells(f, frame);
+		assert.equal(frame.tatsuWarm, k);
+		assert.equal(text(cells), settled, `tick ${k}: every character is current`);
+		assert.ok(cells.every((c) => c.bg === "field"), "colour only, no background");
+		for (const [component, label, state, ink] of [[0, at.cliLabel, at.cliState, "warn"], [1, at.wksLabel, at.wksState, "primary"]] as const) {
+			assert.ok(span(cells, label).every((c) => c.fg === expect("graphic", k, component, 4)), `tick ${k}: label`);
+			const half = span(cells, state);
+			assert.equal(half[0].fg, expect(ink, k, component, 0), `tick ${k}: shape`);
+			assert.ok(half.slice(2).every((c) => c.fg === expect(ink, k, component, 2)), `tick ${k}: code`);
+		}
 	}
-	state = advanceMotion(state, f, 4000); assert.equal(motionFrame(state, 4000).tatsuBoot, undefined);
-	assert.deepEqual(tatsuCells(f, motionFrame(state, 4000)), settledCells);
+	state = advanceMotion(state, f, 2000 + footer.TATSU_WARM_TICKS * 50);
+	assert.equal(state.tatsuWarm, undefined); assert.deepEqual(tatsuCells(f, motionFrame(state, 2700)), settledCells);
+	// Reappearance warms up again; motion off and resume draw everything immediately.
 	state = advanceMotion(state, absent, 4100); state = advanceMotion(state, f, 4200);
-	assert.equal(motionFrame(state, 4200).tatsuBoot, 0);
+	assert.equal(motionFrame(state, 4200).tatsuWarm, 0);
 	const resumed = startMotion(f, 5000, 14, false);
-	assert.equal(resumed.tatsuBoot, undefined); assert.deepEqual(resumed.tatsuLatches, {});
+	assert.equal(resumed.tatsuWarm, undefined); assert.deepEqual(resumed.tatsuLatches, {});
 	assert.deepEqual(tatsuCells(f), settledCells, "motion off draws everything immediately");
-	const boot = advanceMotion(startMotion(absent, 0, 14, true), f, 100), booting = tatsuCells(f, motionFrame(boot, 100));
-	assert.equal(motionFrame(boot, 100).tatsuBoot, undefined);
-	assert.equal(text(booting).trimEnd(), tatsuPlain(f), "EXT footer boot uses existing style treatment, not blanks");
+	// A reload: present at the footer boot, the entry stays dark until the boot reaches EXT, then warms up.
+	const reload = startMotion(f, 0, 14, true), extAt = 14 * 50;
+	assert.equal(reload.tatsuWarm, extAt);
+	const before = motionFrame(reload, 100), dark = tatsuCells(f, before);
+	assert.ok(before.tatsuWarm! < 0); assert.equal(text(dark), settled); assert.ok(dark.filter((c) => c.ch !== " ").every((c) => c.fg === "field"));
+	assert.equal(tatsuCells(f, motionFrame(reload, extAt + 50))[at.cliState[0]].fg, "warn25");
+	assert.deepEqual(tatsuCells(f, motionFrame(reload, extAt + footer.TATSU_WARM_TICKS * 50)), settledCells, "settled once warm, even inside the footer boot");
+	assert.ok(nextMotionDelay(reload, 100) <= 50);
+	// Appearing mid-boot also waits for EXT; appearing after it has passed starts at once.
+	const early = advanceMotion(startMotion(absent, 0, 14, true), f, 100), late = advanceMotion(startMotion(absent, 0, 14, true), f, 900);
+	assert.equal(early.tatsuWarm, extAt); assert.equal(late.tatsuWarm, 900);
 });
 
 test("Tatsu: checking glyph cadence and gentle eight-step code fade share epoch and scheduler; off is steady", () => {
@@ -2364,7 +2385,7 @@ test("Tatsu: completed-result latches the state only, no first/unchanged/checkin
 	state = advanceMotion(state, current, 2200); assert.deepEqual(state.tatsuLatches, {});
 	const first = advanceMotion(startMotion({ ...current, tatsu: undefined }, 0, 2, false), current, 2500);
 	assert.deepEqual(first.tatsuLatches, {});
-	const resumed = startMotion(local, 2600, 2, false); assert.deepEqual(resumed.tatsuLatches, {}); assert.equal(resumed.tatsuBoot, undefined);
+	const resumed = startMotion(local, 2600, 2, false); assert.deepEqual(resumed.tatsuLatches, {}); assert.equal(resumed.tatsuWarm, undefined);
 });
 
 test("Tatsu: attention beacon changes only the ▲ cell at most once per four seconds, code/count unchanged; ambient excluded", () => {
