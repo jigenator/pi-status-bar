@@ -20,19 +20,24 @@ export type TatsuComponent = { component: "tatsu-cli" | "agent-workspace"; state
 export type TatsuSnapshot = { phase: "inactive" | "checking" | "completed"; components: readonly TatsuComponent[] };
 const activeTatsu = (snapshot: FooterSnapshot) => snapshot.tatsu && snapshot.tatsu.phase !== "inactive" ? snapshot.tatsu : undefined;
 const tatsuKey = (c: TatsuComponent) => `${c.state}/${c.commitsBehind ?? "?"}/${c.localChanges ?? "?"}`;
-const tatsuLook = (c: TatsuComponent): { shape: string; word: string; ink: Hue } => {
+// A component's state half: shape and short code, black on the state colour (`ink`). Behind/repair append local edits.
+const tatsuLook = (c: TatsuComponent): { shape: string; code: string; ink: Hue } => {
+	const edit = c.localChanges === true ? " ◆ EDIT" : "";
 	switch (c.state) {
-		case "current": return { shape: "•", word: "current", ink: "primary" };
-		case "behind": return { shape: "▲", word: `update${c.commitsBehind === undefined ? "" : ` ×${c.commitsBehind}`}${c.localChanges === true ? " ◆ local edits" : ""}`, ink: "warn" };
-		case "repair": return { shape: "▲", word: `repair${c.localChanges === true ? " ◆ local edits" : ""}`, ink: "warn" };
-		case "local_changes": return { shape: "◆", word: "local edits", ink: "warn" };
-		case "missing": return { shape: "✕", word: "not installed", ink: "high" };
-		case "not_runnable": return { shape: "✕", word: "not runnable", ink: "high" };
-		case "unavailable": return { shape: "✕", word: "unavailable", ink: "high" };
-		case "checking": return { shape: "·", word: "checking", ink: "graphic" };
-		case "inactive": return { shape: "·", word: "inactive", ink: "graphic" };
+		case "current": return { shape: "•", code: "OK", ink: "primary" };
+		case "behind": return { shape: "▲", code: `UP${c.commitsBehind === undefined ? "" : `×${c.commitsBehind}`}${edit}`, ink: "warn" };
+		case "repair": return { shape: "▲", code: `FIX${edit}`, ink: "warn" };
+		case "local_changes": return { shape: "◆", code: "EDIT", ink: "warn" };
+		case "missing": return { shape: "✕", code: "MISS", ink: "high" };
+		case "not_runnable": return { shape: "✕", code: "NRUN", ink: "high" };
+		case "unavailable": return { shape: "✕", code: "UNAV", ink: "high" };
+		case "checking": return { shape: "·", code: "CHK", ink: "graphic" };
+		case "inactive": return { shape: "·", code: "OFF", ink: "graphic" };
 	}
 };
+// One plate per component, ` TCLI ` then ` <shape> <code> ` (single-width glyphs), two field cells apart.
+const TATSU_GAP = 2;
+const tatsuWidth = (snapshot: TatsuSnapshot) => snapshot.components.reduce((n, c) => n + 10 + tatsuLook(c).code.length, 0) + TATSU_GAP * (snapshot.components.length - 1);
 export type FooterSnapshot = {
 	homePath: string;
 	launchPath: string;
@@ -95,7 +100,8 @@ export function safeText(input: string, allowStyles = false): string {
 	return result.trim();
 }
 
-export const TATSU_CHECK_FADE_LEVELS = ["#555555", "#636363", "#717171", "#858585", "#9a9a9a", "#858585", "#717171", "#636363"] as const;
+// Checking's state-half background: a gentle triangle wave up from graphic grey; black text stays at least 4.3:1.
+export const TATSU_CHECK_FADE_LEVELS = ["#717171", "#7b7b7b", "#868686", "#919191", "#9c9c9c", "#919191", "#868686", "#7b7b7b"] as const;
 const tatsuFadeColors = TATSU_CHECK_FADE_LEVELS.map((hex) => {
 	const level = parseInt(hex.slice(1, 3), 16);
 	return rgbColor(level, level, level);
@@ -111,8 +117,7 @@ const C = {
 	warn: rgbColor(0xd7, 0x9e, 0x52),
 	high: rgbColor(0xf2, 0x47, 0x23),
 	graphic: rgbColor(0x71, 0x71, 0x71),
-	checkLow: tatsuFadeColors[0], checkMidLow: tatsuFadeColors[1],
-	checkMidHigh: tatsuFadeColors[3], checkHigh: tatsuFadeColors[4],
+	checkLow: tatsuFadeColors[1], checkMid: tatsuFadeColors[2], checkHigh: tatsuFadeColors[3], checkPeak: tatsuFadeColors[4],
 	warnDim: rgbColor(0x6c, 0x4f, 0x29), // Tatsu beacon, 50% amber over black
 	cobalt: rgbColor(0x00, 0x4f, 0xe8), // PNYTL LTE
 	magenta: rgbColor(0xc0, 0x00, 0x92), // PNYTL ULT
@@ -378,14 +383,15 @@ const USAGE_ROW_CELLS = ` ${LABEL.usg} `.length + 1 - USAGE_GAP
 export const USAGE_BOOT_TICKS = Math.ceil(USAGE_ROW_CELLS / USAGE_SWEEP_CELLS_PER_TICK) + 1;
 
 export const TATSU_CHECK_STEP_MS = 150;
-const TATSU_CHECK_FADE_INKS: readonly Hue[] = ["checkLow", "checkMidLow", "graphic", "checkMidHigh", "checkHigh", "checkMidHigh", "graphic", "checkMidLow"];
+const TATSU_CHECK_FADE_INKS: readonly Hue[] = ["graphic", "checkLow", "checkMid", "checkHigh", "checkPeak", "checkHigh", "checkMid", "checkLow"];
 export const TATSU_CHECK_GLYPHS = ["·", "•", "•", "•", "·"] as const;
 export const TATSU_LATCH_TICKS = 3;
 export const TATSU_BEACON_PERIOD_MS = 4000;
 export const TATSU_BEACON_STEP_MS = 50;
 export const TATSU_BEACON_MS = 3 * TATSU_BEACON_STEP_MS;
-// Typical status draws in in ~0.7s; long counts/local-edits combinations get enough ticks too.
-const tatsuBootTicks = (snapshot: TatsuSnapshot) => Math.ceil((snapshot.components.reduce((n, c) => n + 7 + tatsuLook(c).word.length, 0) + 3) / USAGE_SWEEP_CELLS_PER_TICK);
+// The front reaches the entry's last cell on the final tick: typical plates draw in in ~0.45s; long counts/local
+// edits get enough ticks too.
+const tatsuBootTicks = (snapshot: TatsuSnapshot) => Math.ceil(tatsuWidth(snapshot) / USAGE_SWEEP_CELLS_PER_TICK);
 type TatsuBoot = { at: number; ticks: number };
 
 type StrikeKind = "heavy" | "void" | "flash" | "mid" | "light" | "worn";
@@ -1115,6 +1121,20 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const settled = Math.max(0, front - USAGE_SWEEP_CELLS_PER_TICK - x);
 		return truncateToWidth(text, settled, "") + paint([...stripTerminalSequences(text)].slice(settled, Math.max(0, front - x)).join(""), LOCKED);
 	};
+	// Tatsu plates break only between components, so a plate never splits while it fits a line; one wider than its line
+	// wraps like any other status. The first line holds `first` cells after any `lead` (the minimal layout's label).
+	const plateLines = (parts: string[], first: number, rest: number, lead: boolean) => {
+		const lines = [""];
+		let used = 0, cap = first;
+		for (const part of parts) {
+			const w = visibleWidth(part), gapWidth = used ? TATSU_GAP : 0;
+			if (used + gapWidth + w > cap && (used || lead)) { lines.push(""); used = 0; cap = rest; lead = false; }
+			if (w > cap) { const pieces = wrap(part, cap); lines[lines.length - 1] = pieces[0]; lines.push(...pieces.slice(1)); used = cap; continue; }
+			lines[lines.length - 1] += (used ? paint(" ".repeat(TATSU_GAP)) : "") + part;
+			used += (used ? TATSU_GAP : 0) + w;
+		}
+		return lines;
+	};
 	const mode = theme.getColorMode();
 	// Keep every status and its own colors; sorting keeps row order stable. Boot settles statuses one after another.
 	const tatsu = activeTatsu(snapshot), statusMap = new Map(snapshot.statuses);
@@ -1126,20 +1146,22 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const fg = foregroundAnsi(C[base.fg ?? "text"], mode) + (base.bold ? "\x1b[1m" : ""), bg = backgroundAnsi(C.field, mode);
 		if (key === "tatsu-status" && tatsu) {
 			const held = inBoot || frame.tatsuBoot !== undefined;
-			const styled = tatsu.components.map((c) => {
-				const look = tatsuLook(c), latch = held ? undefined : frame.tatsuLatches?.[c.component];
-				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: "field", bg: look.ink, bold: true } : { fg: look.ink, bold: true };
+			const parts = tatsu.components.map((c) => {
+				const look = tatsuLook(c), latch = held ? undefined : frame.tatsuLatches?.[c.component], checking = c.state === "checking" && !held;
+				// Checking fades only the state half's background; its text stays black.
+				const plateInk = checking && frame.tatsuCheck !== undefined ? TATSU_CHECK_FADE_INKS[frame.tatsuCheck % TATSU_CHECK_FADE_INKS.length] : look.ink;
+				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: look.ink, bg: "field", bold: true } : { fg: "field", bg: plateInk, bold: true };
 				const beacon = held || latch !== undefined ? undefined : frame.tatsuBeacon;
 				const attention = c.state === "behind" || c.state === "repair";
-				const shape = c.state === "checking" && !held ? TATSU_CHECK_GLYPHS[(frame.tatsuCheck ?? 0) % TATSU_CHECK_GLYPHS.length] : attention && beacon !== undefined && beacon < 2 ? "▴" : look.shape;
+				const shape = checking ? TATSU_CHECK_GLYPHS[(frame.tatsuCheck ?? 0) % TATSU_CHECK_GLYPHS.length] : attention && beacon !== undefined && beacon < 2 ? "▴" : look.shape;
 				const shapeInk = attention && beacon !== undefined && beacon > 0 ? { ...ink, fg: "warnDim" as const } : ink;
-				const wordInk = c.state === "checking" && !held && frame.tatsuCheck !== undefined ? { ...ink, fg: TATSU_CHECK_FADE_INKS[frame.tatsuCheck % TATSU_CHECK_FADE_INKS.length] } : ink;
-				return paint(c.component === "tatsu-cli" ? "TCLI" : "AWKS", { fg: "secondary", bold: true }) + gap() + paint(shape, shapeInk) + paint(` ${look.word}`, wordInk);
-			}).join(paint("   "));
-			// During the footer boot use EXT's existing treatment, not an independent draw-in.
-			return { structured: true, text: inBoot ? paint(stripTerminalSequences(styled), base) : styled, front: !inBoot && frame.tatsuBoot !== undefined ? (frame.tatsuBoot + 1) * USAGE_SWEEP_CELLS_PER_TICK : Infinity };
+				const plate = paint(` ${c.component === "tatsu-cli" ? "TCLI" : "AWKS"} `, { fg: "secondary", bg: "surface", bold: true }) + paint(" ", ink) + paint(shape, shapeInk) + paint(` ${look.code} `, ink);
+				// During the footer boot use EXT's existing treatment, not an independent draw-in.
+				return inBoot ? paint(stripTerminalSequences(plate), base) : plate;
+			});
+			return { parts, text: "", front: !inBoot && frame.tatsuBoot !== undefined ? (frame.tatsuBoot + 1) * USAGE_SWEEP_CELLS_PER_TICK : Infinity };
 		}
-		return { structured: false, text: fg + bg + restoreBase(safeText(status, true), fg, bg), front: Infinity };
+		return { parts: undefined, text: fg + bg + restoreBase(safeText(status, true), fg, bg), front: Infinity };
 	});
 
 	/* ---------- USG: one fixed column per provider, squares over countdowns; motion restyles, never moves ---------- */
@@ -1303,11 +1325,12 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		statuses.forEach((status, i) => {
 			let label = i === 0 ? paint(` ${LABEL.ext} `, GREY_PLATE) + gap() : "";
 			// At sub-plate widths the label cannot share a line with the first word. Keep label cells out of the sweep.
-			if (status.structured && label && W < 9) {
+			if (status.parts && label && W < 9) {
 				for (const line of wrap(label, W)) lines.push(serialize(runPad(line, W)));
 				label = "";
 			}
-			wrap(label + status.text, W).forEach((line, j) => {
+			const statusLines = status.parts ? plateLines(status.parts, label ? W - 9 : W, W, !!label).map((line, j) => (j === 0 ? label + line : line)) : wrap(label + status.text, W);
+			statusLines.forEach((line, j) => {
 				const prefix = label && j === 0 ? Math.min(9, W) : 0;
 				const drawn = status.front === Infinity ? line : sliceByColumn(line, 0, prefix) + drawInText(sliceByColumn(line, prefix, W), 0, status.front);
 				lines.push(serialize(runPad(drawn, W)));
@@ -1522,8 +1545,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	});
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
-		if (!status.structured) { body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status.text, FW)); return; }
-		wrap(status.text, FW).forEach((line, j) => {
+		if (!status.parts) { body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status.text, FW)); return; }
+		plateLines(status.parts, FW, FW, false).forEach((line, j) => {
 			body.push([...(i === 0 && j === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : blanks(P)), ...blanks(1), ...runPad(drawInText(line, 0, status.front), FW, "field", false)]);
 		});
 	});
