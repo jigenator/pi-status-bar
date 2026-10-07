@@ -22,6 +22,17 @@ const motionSeed = () => randomBytes(4).readInt32LE();
 // Persisted successful compactions on the selected branch only: failed/cancelled
 // attempts append nothing, and branch_summary entries and abandoned siblings are excluded.
 const countCompactions = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
+// Mirrors Pi 1.0.4 SettingsManager.getCompactionSettings: a `provider/id` override, then
+// compaction.reserveTokens, then 16384. Disabled auto-compaction, or settings Pi would
+// reject, leave the gauge on the full window.
+function compactionReserve(settings: unknown, model: ExtensionContext["model"]): number | undefined {
+	const raw = record(settings) ? settings.compaction ?? {} : {};
+	if (!record(raw) || !(raw.enabled ?? true)) return undefined;
+	const overrides = raw.modelOverrides, entry = model && record(overrides) ? overrides[`${model.provider}/${model.id}`] ?? {} : {};
+	if (!record(entry)) return undefined;
+	const reserve = entry.reserveTokens ?? raw.reserveTokens ?? 16_384;
+	return [raw.reserveTokens, entry.reserveTokens].every((value) => value === undefined || count(value)) && count(reserve) ? reserve : undefined;
+}
 // Ponytail 4.13.0's exact status output; bounded before stripping SGR. Other
 // controls/warnings/format changes are not a mode and remain visible in EXT.
 // The leading ●/○ is Ponytail's own activity dot: ● while the agent runs a turn.
@@ -316,6 +327,7 @@ export default function (pi: ExtensionAPI) {
 						homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr,
 						contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(),
 						statuses: ponytail.statuses, activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions, ponytail: ponytail.mode, ponytailActive: ponytail.active,
+						compactionReserve: compactionReserve(pi.getSettings(), s.ctx.model),
 					};
 				};
 				s.units = null;

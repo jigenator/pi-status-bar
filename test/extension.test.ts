@@ -85,6 +85,7 @@ async function harness(f: any, manager: any, mode = "tui", extra: { before?: str
 	let model = { id: "first-model", provider: "fixture", contextWindow: 128_000 };
 	let thinking = "high";
 	let usage: any = { tokens: 1000, contextWindow: 128_000, percent: 0.8 };
+	let settings: any = {};
 	const notices: [string, string][] = [];
 	const statuses = new Map(extra.emptyStatuses ? [] : [["ponytail", "\x1b[32mPonytail ready\x1b[0m"]]);
 	const statusCalls: any[] = [];
@@ -92,7 +93,7 @@ async function harness(f: any, manager: any, mode = "tui", extra: { before?: str
 	const errors: any[] = []; runner.onError((error: any) => errors.push(error));
 	runner.bindCore({
 		sendMessage() {}, sendUserMessage() {}, appendEntry: (type: string, data: any) => manager.appendCustomEntry(type, data), setSessionName() {}, getSessionName: () => undefined, setLabel() {},
-		getActiveTools: () => [tool.name], getAllTools: () => [tool], getSettings: () => ({}), setActiveTools() {}, refreshTools() {}, getCommands: () => [], setModel: async () => true,
+		getActiveTools: () => [tool.name], getAllTools: () => [tool], getSettings: () => structuredClone(settings), setActiveTools() {}, refreshTools() {}, getCommands: () => [], setModel: async () => true,
 		getThinkingLevel: () => thinking, setThinkingLevel: (value: string) => { thinking = value; },
 	}, { getModel: () => model, getScopedModels: () => [], isIdle: () => idle, isProjectTrusted: () => false, getSignal: () => undefined, abort() {}, hasPendingMessages: () => false, shutdown() {}, getContextUsage: () => usage, compact() {}, getSystemPrompt: () => "" });
 	const makeUI = () => ({ theme: { ...theme, fg: (_color: string, text: string) => text },
@@ -124,7 +125,7 @@ async function harness(f: any, manager: any, mode = "tui", extra: { before?: str
 		setIdle(value: boolean) { idle = value; },
 		reply(request: any, data: any, envelope = {}) { events.emit(`subagents:rpc:v1:reply:${request.requestId}`, { version: 1, requestId: request.requestId, method: request.method, success: true, data, ...envelope }); },
 		replaceFooter() { const previous = component; previous?.dispose(); component = footerFactory({ requestRender: () => { renders++; } }, theme, { getExtensionStatuses: () => statuses }); return previous; },
-		runner, tool, emitStart, stop, text, select, statuses, errors, motion, notices, get component() { return component; }, get renders() { return renders; }, setUsage(value: any) { usage = value; }, changeModel() { model = { ...model, id: "second-model" }; thinking = "off"; usage = { tokens: null, percent: null, contextWindow: 128_000 }; } };
+		runner, tool, emitStart, stop, text, select, statuses, errors, motion, notices, get component() { return component; }, get renders() { return renders; }, setUsage(value: any) { usage = value; }, setSettings(value: any) { settings = value; }, changeModel() { model = { ...model, id: "second-model" }; thinking = "off"; usage = { tokens: null, percent: null, contextWindow: 128_000 }; } };
 }
 
 test("real loader registration; display-only signal, invalid paths, aborted calls and non-TUI", async (t) => {
@@ -248,7 +249,16 @@ test("live context/model/statuses; local tool refresh, stale completions and own
 	await until(() => /release modified/.test(h.text()));
 	h.statuses.set("second", "Second extension status"); h.changeModel();
 	assert.match(h.text(), /Ponytail ready/); assert.match(h.text(), /Second extension status/);
-	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/);
+	assert.match(h.text(), /second-model · thinking off/); assert.match(h.text(), /\?\/112k[^\n]*\? UNKNOWN/, "Pi\'s default 16384 reserve sets the budget");
+	// Live settings: a model override beats compaction.reserveTokens; disabled or rejected settings keep the full window.
+	h.setUsage({ tokens: 48_000, contextWindow: 128_000, percent: 37.5 });
+	h.setSettings({ compaction: { reserveTokens: 8_000, modelOverrides: { "fixture/second-model": { reserveTokens: 64_000 }, "fixture/first-model": { reserveTokens: 1 } } } });
+	assert.match(h.text(), /48k\/64k[^\n]*▲ WARN/, "per-model override sets the budget");
+	h.setSettings({ compaction: { reserveTokens: 8_000 } }); assert.match(h.text(), /48k\/120k/, "ordinary reserve applies without an override");
+	for (const compaction of [{ enabled: false, reserveTokens: 64_000 }, { reserveTokens: -1, modelOverrides: { "fixture/second-model": { reserveTokens: 64_000 } } }, { modelOverrides: { "fixture/second-model": { reserveTokens: "64k" } } }, { modelOverrides: { "fixture/second-model": 64_000 } }]) {
+		h.setSettings({ compaction }); assert.match(h.text(), /48k\/128k/, JSON.stringify(compaction));
+	}
+	h.setSettings({});
 	await writeFile(join(f.second, ".slow-git"), "delay");
 	await h.select(f.second); await sleep(30); await h.select(f.plain);
 	// The plain path is followed directly by CTX: no stale Git details in between.
@@ -323,7 +333,7 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	assert.equal(await f.count(f.gitLog), local, "animation never inspects Git");
 	assert.equal(await f.count(f.ghLog), remote, "animation never queries GitHub");
 	h.setUsage({ tokens: 120_000, contextWindow: 128_000, percent: 93.75 });
-	assert.match(h.text(), /120k\/128k[^\n]*▲ HIGH/, "a tone change shows the current value immediately, mid-wipe");
+	assert.match(h.text(), /120k\/112k[^\n]*▲ HIGH/, "a tone change shows the current value immediately, mid-wipe");
 
 	const cleared = t.mock.method(globalThis, "clearTimeout");
 	await h.motion("off");
@@ -334,7 +344,7 @@ test("decorative motion: footer-owned unref'd timer, session /footer-motion, liv
 	await sleep(600);
 	assert.equal(h.renders, renders, "motion off leaves no repaint timer"); assert.equal(h.text(), settled);
 	h.setUsage({ tokens: null, contextWindow: 128_000, percent: null });
-	assert.match(h.text(), /\?\/128k[^\n]*\? UNKNOWN/, "live values still update with motion off");
+	assert.match(h.text(), /\?\/112k[^\n]*\? UNKNOWN/, "live values still update with motion off");
 	await h.motion("sideways");
 	assert.deepEqual(h.notices.at(-1), ["warning", "Usage: /footer-motion [on|off]"]);
 	await sleep(300); assert.equal(h.renders, renders, "invalid arguments leave motion unchanged");
