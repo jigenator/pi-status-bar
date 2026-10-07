@@ -726,11 +726,14 @@ const prior=fs.existsSync(${JSON.stringify(log)}) ? fs.readFileSync(${JSON.strin
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args})+'\\n');
 process.on('SIGTERM',()=>{ fs.appendFileSync(${JSON.stringify(kills)}, p+'\\n'); process.exit(143); });
 const pick=(...names)=>{ for (const name of names) { const file=path.join(dir,name); if (fs.existsSync(file)) return fs.readFileSync(file,'utf8'); } };
-setTimeout(()=>{ const out=pick(p+'.'+prior+'.json', p+'.json') ?? ''; process.stdout.write(out); process.exitCode=out.includes('"error"') ? 1 : 0; }, Number(pick('delay-'+p+'.'+prior, 'delay-'+p) ?? 0));
+const answer=()=>setTimeout(()=>{ const out=pick(p+'.'+prior+'.json', p+'.json') ?? ''; process.stdout.write(out); process.exitCode=out.includes('"error"') ? 1 : 0; }, Number(pick('delay-'+p+'.'+prior, 'delay-'+p) ?? 0));
+// A hold file keeps this call pending until the test releases it, independent of real-time scheduling.
+const hold=path.join(dir,'hold-'+p+'.'+prior);
+(function wait(){ if (fs.existsSync(hold)) setTimeout(wait, 20); else answer(); })();
 `);
 	await chmod(join(f.root, "bin", "codexbar"), 0o755);
 	const lines = async (path: string) => { try { return (await readFile(path, "utf8")).split("\n").filter(Boolean); } catch { return []; } };
-	return { set, calls: async () => (await lines(log)).map((line) => JSON.parse(line).args), kills: () => lines(kills) };
+	return { set, release: (name: string) => rm(join(dir, name), { force: true }), calls: async () => (await lines(log)).map((line) => JSON.parse(line).args), kills: () => lines(kills) };
 }
 // Mock only the adapter's timeouts and wall clock; real subprocesses keep running on real time.
 function usageClock(t: any) {
@@ -751,8 +754,8 @@ test("USG: missing codexbar (ENOENT) hides the row until a later poll finds it; 
 	await untilReal(() => /KIM ■/.test(h.text()) && /CLD ■/.test(h.text()) && /CDX ■/.test(h.text()));
 	// The mocked wall clock moved five minutes: 04:20 is now 1h10m away.
 	const [squares, countdowns] = usgRows(h);
-	assert.match(squares, /^ {3}04 USG {2}CDX ■■■■□ {3}CLD ■■■■■ ■■■■■ {3}KIM ■■■■■ ■■■■■ +$/);
-	assert.match(countdowns, /^\S? +6d2h +1h10m 5d15h +3h04m 6d12h +\S?$/);
+	assert.match(squares, /^ {3}04 USG {2}CDX ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KIM ■■■■■■■■ ■■■■■■■■ +$/);
+	assert.match(countdowns, /^\S? +6d2h +1h10m +5d15h +3h04m +6d12h +\S?$/);
 	const lines = h.text().split("\n");
 	assert.ok(lines.findIndex((line: string) => line.includes("03 MDL")) < lines.indexOf(squares) && lines.indexOf(squares) < lines.findIndex((line: string) => line.includes("05 EXT")));
 	assert.deepEqual((await codexbar.calls()).sort(), ["claude", "codex", "kimi"].map((p) => ["usage", "--provider", p, "--format", "json", "--json-only"]));
@@ -775,7 +778,7 @@ test("USG: concurrent first round with pending providers, single-flight 5-minute
 	// Kimi and Codex answer first; Claude is still pending, never shown as a failure or zero.
 	await untilReal(() => /KIM ■/.test(h.text()) && /CDX ■/.test(h.text()));
 	let [squares, countdowns] = usgRows(h);
-	assert.match(squares, /CLD ·····/); assert.match(countdowns, /^\S? +6d2h +pending +3h09m 6d12h/);
+	assert.match(squares, /CLD ········ ········/); assert.match(countdowns, /^\S? +6d2h +pending +3h09m +6d12h/);
 	await untilReal(() => /CLD ■/.test(h.text()));
 	assert.equal((await codexbar.calls()).length, 3, "one concurrent call per provider");
 
@@ -802,12 +805,72 @@ test("USG: concurrent first round with pending providers, single-flight 5-minute
 	await untilReal(async () => (await codexbar.calls()).length === 9);
 	await realSleep(300);
 	[squares, countdowns] = usgRows(h);
-	assert.match(squares, /CLD ■■■■■ ■■■■■/);
+	assert.match(squares, /CLD ■■■■■■■□ ■■■■■■■■/);
 	const under = (tag: string) => countdowns[squares.indexOf(tag)];
 	assert.match(under("CLD"), /\d/, "the failed provider shows its age under its tag");
 	assert.deepEqual([under("CDX"), under("KIM")], [" ", " "], "fresh providers are not marked stale");
 	assert.doesNotMatch(h.text(), /Not logged in|person@|Secret|unavailable/);
 	assert.deepEqual(await codexbar.kills(), []);
+	assert.deepEqual(h.errors, []);
+});
+
+test("USG: a row that appears after startup boots on the next renders, and a slow provider fills in without moving its column", async (t) => {
+	const f = await fixtures(t), codexbar = await fakeCodexbar(f), advance = usageClock(t);
+	// Decoration time is mocked too, so each render is an exact frame; subprocesses still run on real time.
+	let mono = Math.ceil(performance.now());
+	t.mock.method(performance, "now", () => mono);
+	for (const provider of ["codex", "kimi"]) await codexbar.set(`delay-${provider}.0`, 300);
+	await codexbar.set("hold-claude.0", ""); // Claude stays pending until the boot assertions are done
+	const h = await harness(f, host.SessionManager.inMemory(f.launch)); t.after(() => h.stop());
+	await h.emitStart();
+	assert.doesNotMatch(h.text(), /USG/, "not yet detected: no row");
+	mono += 2_000; h.text(); // the footer's own boot is over before the row exists
+	const usg = () => { const lines: string[] = h.component.render(300), i = lines.findIndex((line) => stripTerminalSequences(line).includes("04 USG")); return i < 0 ? [] : [lines[i], lines[i + 1]]; };
+	// The edge pulse's small square is the one size-only glyph change; it is still a lit square. Frame glyphs are
+	// ambient ghost targets, not USG content.
+	const plain = (rows: string[]) => rows.map((line) => stripTerminalSequences(line).replaceAll("▪", "■").replace(/[┃┏┓┗┛━]/g, " "));
+	await untilReal(() => /04 USG/.test(h.text()));
+	await untilReal(() => /CDX ■/.test(h.text()) && /KIM ■/.test(h.text()));
+	// The first renders with the row are its boot: the plate's pair is swapped and the tags wait on the band.
+	const swapped = "\x1b[38;2;85;85;85m\x1b[48;2;255;255;255m\x1b[1m 04 USG ";
+	const first = usg();
+	assert.ok(first[0].includes(swapped), "plate polarity swap on the first boot frame");
+	assert.match(plain(first)[0], /CDX ■■■■■■□□ {3}CLD ········ ········ {3}KIM ■■■■■■■■ ■■■■■■■■/);
+	const pendingAt = plain(first)[0].indexOf("CLD"), slotAt = plain(first)[0].indexOf("·", pendingAt);
+	// The single decoration timeout carries the boot: a wake per 50 ms tick to its end at tick 21, each a different
+	// frame of the same text.
+	const frames = [first];
+	for (let k = 1; k <= 21; k++) {
+		const renders = h.renders;
+		mono += 50; await advance(50);
+		assert.ok(h.renders > renders, `tick ${k}: decoration wake`);
+		frames.push(usg());
+	}
+	assert.ok(!frames[2][0].includes(swapped), "the plate settles after two ticks");
+	for (const frame of frames) assert.deepEqual(plain(frame), plain(first), "characters never change during the boot");
+	assert.ok(new Set(frames.map((frame) => frame.join("\n"))).size > 10, "the boot restyles over many frames");
+	const settled = frames.at(-1)!;
+	mono += 30; assert.deepEqual(usg(), settled, "settled after about one second");
+	assert.match(plain(settled)[0], /CLD ········ ········/, "Claude is still pending after the boot");
+	// Claude answers later: its data fills in cell by cell, in place of the pending cells.
+	await codexbar.release("hold-claude.0");
+	await untilReal(() => /CLD ■/.test(h.text()));
+	const arrival = usg(), fills = [arrival];
+	for (let k = 1; k <= 8; k++) {
+		const renders = h.renders;
+		mono += 50; await advance(50);
+		assert.ok(h.renders > renders, `fill tick ${k}: decoration wake`);
+		fills.push(usg());
+	}
+	const row = plain(arrival)[0];
+	assert.match(row, /CDX ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KIM ■■■■■■■■ ■■■■■■■■/);
+	assert.deepEqual([row.indexOf("CLD"), row.indexOf("■", row.indexOf("CLD"))], [pendingAt, slotAt], "the column and its first square stay put");
+	assert.match(plain(arrival)[1], /1h15m {4}5d15h/);
+	assert.ok(arrival[0].includes("\x1b[38;2;255;255;255m\x1b[48;2;0;0;0m■"), "the first square of each window is white on its tick");
+	assert.ok(arrival[0].includes("\x1b[38;2;113;113;113m\x1b[48;2;0;0;0m■"), "later squares wait in grey");
+	for (const frame of fills) assert.deepEqual(plain(frame), plain(arrival), "values are current from the first fill frame");
+	assert.notDeepEqual(fills[0], fills.at(-1), "the fill-in restyles");
+	assert.ok(!fills.at(-1)![0].includes("\x1b[38;2;113;113;113m\x1b[48;2;0;0;0m■"), "settled after 400 ms");
 	assert.deepEqual(h.errors, []);
 });
 
@@ -823,13 +886,13 @@ test("USG: shutdown and footer/tree replacement abort in-flight calls, clear tim
 	// Same-session tree restore replaces the footer: the old round is aborted and its results are discarded.
 	await h.runner.emit({ type: "session_tree", newLeafId: null, oldLeafId: null });
 	await untilReal(async () => (await codexbar.kills()).length === 3);
-	await untilReal(() => /CLD ■■■■■ ■■■■■/.test(h.text()));
+	await untilReal(() => /CLD ■■■■■■■□ ■■■■■■■■/.test(h.text()));
 	await realSleep(1600);
-	assert.doesNotMatch(h.text(), /CLD ■□□□□/, "aborted first-round data never renders");
+	assert.doesNotMatch(h.text(), /CLD ■□□□□□□□/, "aborted first-round data never renders");
 	assert.equal((await codexbar.calls()).length, 6);
 	// Footer replacement keeps the session's cached data and starts a fresh round.
 	h.replaceFooter();
-	assert.match(h.text(), /CLD ■■■■■ ■■■■■/);
+	assert.match(h.text(), /CLD ■■■■■■■□ ■■■■■■■■/);
 	await untilReal(async () => (await codexbar.calls()).length === 9); await realSleep(300);
 	// Shutdown aborts in-flight work and clears the poll and minute timers.
 	for (const provider of ["codex", "claude", "kimi"]) await codexbar.set(`delay-${provider}`, 3000);

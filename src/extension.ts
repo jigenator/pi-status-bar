@@ -213,7 +213,7 @@ export default function (pi: ExtensionAPI) {
 				// A failure keeps the last good sample, which the renderer then marks stale.
 				s.usage.providers.set(provider, result.kind === "usage"
 					? { provider, data: { windows: result.windows, updatedAt: result.updatedAt, fetchedAt: Date.now() } }
-					: { provider, data: s.usage.providers.get(provider)?.data, failure: result.reason === "timeout" ? "timeout" : "unavailable" });
+					: { provider, data: s.usage.providers.get(provider)?.data, failure: result.reason === "timeout" ? "timeout" : "failed" });
 			}
 			s.requestRender?.();
 		};
