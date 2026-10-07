@@ -1110,12 +1110,50 @@ test("glitch is fill-only: never the readout, the fill edge, unlit track or unkn
 const ponytailStates = ["lite", "full", "ultra", "off", "review", "checking", "unknown"] as const;
 const ponytailCodes = ["LTE", "FUL", "ULT", "OFF", "REV", "CHK", "UNK"];
 const ponytailInks = ["rgb(0,79,232)", "violet", "rgb(192,0,146)", "plate", "rgb(0,110,112)", "plate", "plate"];
+// Anchored on the title: the icon cell (index 2) may show the activity light instead of ⌑.
 function ponytailCells(lines: string[]) {
-	const row = grid(lines).find((cells) => text(cells).includes("⌑ PNYTL //"));
+	const row = grid(lines).find((cells) => text(cells).includes(" PNYTL //"));
 	assert.ok(row);
-	const start = text(row).indexOf("⌑") - 2;
+	const start = text(row).indexOf(" PNYTL //") - 3;
 	return row.slice(start, start + 18);
 }
+
+test("PNYTL activity light: icon alternates with a pink • at 200/200 ms only while Ponytail reports activity; motion off holds it lit", () => {
+	const icon = (snapshot: FooterSnapshot, frame?: FooterFrame) => { const c = ponytailCells(renderFooter(snapshot, 120, theme, frame))[2]; return [c.ch, c.fg, c.bg]; };
+	const idle: FooterSnapshot = { ...session(), ponytail: "full", ponytailActive: false }, active: FooterSnapshot = { ...idle, ponytailActive: true };
+	const at = (pulse: number | null): FooterFrame => ({ ...SETTLED_FRAME, pulse });
+	for (let pulse = 0; pulse < 32; pulse++) {
+		assert.deepEqual(icon(active, at(pulse)), pulse % 8 < 4 ? ["•", "pink", "text"] : ["⌑", "field", "text"], `pulse ${pulse}: four 50 ms ticks lit, four unlit`);
+		assert.deepEqual(icon(idle, at(pulse)), ["⌑", "field", "text"], "idle never lights");
+	}
+	assert.deepEqual(icon(active), ["•", "pink", "text"], "motion off holds the light on, like ROOT");
+	for (const ponytail of ["lite", "ultra", "review"] as const) assert.deepEqual(icon({ ...active, ponytail }, at(0)), ["•", "pink", "text"], ponytail);
+	// Only a confirmed enabled mode lights; OFF, CHK and UNK keep the static icon.
+	for (const ponytail of ["off", "checking", "unknown"] as const) for (const pulse of [0, null]) assert.deepEqual(icon({ ...active, ponytail }, at(pulse)), ["⌑", "field", "text"], ponytail);
+	// Same 18 cells; only the icon cell changes, at every layout.
+	for (const width of [30, 48, 100, 120, 280]) {
+		const on = ponytailCells(renderFooter(active, width, theme, at(0))), off = ponytailCells(renderFooter(idle, width, theme, at(0)));
+		assert.equal(text(on), `  • PNYTL // FUL  `); assert.equal(text(off), `  ⌑ PNYTL // FUL  `);
+		assert.deepEqual(on.filter((_, i) => i !== 2), off.filter((_, i) => i !== 2), `${width}: rest of the plate unchanged`);
+		assert.ok(renderFooter(active, width, theme, at(0)).every((line) => visibleWidth(line) <= width));
+	}
+	// The scheduler wakes for every light change: 400 ms per blink, 2.5 a second, under three, faster than ROOT's 800 ms.
+	const quiet: FooterSnapshot = { ...active, activity: { working: false, units: 0 } };
+	let state = startMotion(quiet, 0, 5, false), now = 0, last: boolean | undefined;
+	const onsets: number[] = [];
+	while (now <= 10_000) {
+		state = advanceMotion(state, quiet, now);
+		const lit = icon(quiet, motionFrame(state, now))[0] === "•";
+		if (lit && last === false) onsets.push(now);
+		last = lit; now += nextMotionDelay(state, now);
+	}
+	assert.ok(onsets.length >= 24 && onsets.slice(1).every((t, i) => t - onsets[i] === 400), `${onsets.slice(0, 6)}`);
+	for (const t of onsets) assert.ok(onsets.filter((u) => u >= t && u < t + 1000).length <= 3, "at most three flashes in any second");
+	// Activity changes are tracked without disturbing other decoration memory.
+	const s0 = startMotion(idle, 0, 5, false), s1 = advanceMotion(s0, active, 10);
+	assert.equal(s0.ponytailActive, false); assert.equal(s1.ponytailActive, true); assert.equal(s1.ponytailBurst, undefined, "activity is not a mode change");
+	assert.equal(advanceMotion(s1, active, 10), s1);
+});
 
 test("PNYTL: seven exact codes/inks on a static white 16-cell body, optional compatibility and native color conversion", () => {
 	assert.equal(visibleWidth("⌑"), 1);

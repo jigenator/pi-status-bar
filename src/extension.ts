@@ -24,14 +24,16 @@ const motionSeed = () => randomBytes(4).readInt32LE();
 const countCompactions = (ctx: ExtensionContext) => ctx.sessionManager.getBranch().filter((entry) => entry.type === "compaction").length;
 // Ponytail 4.13.0's exact status output; bounded before stripping SGR. Other
 // controls/warnings/format changes are not a mode and remain visible in EXT.
-function ponytailMode(raw: unknown): PonytailMode | undefined {
+// The leading ●/○ is Ponytail's own activity dot: ● while the agent runs a turn.
+function ponytailStatus(raw: unknown): { mode: PonytailMode; active: boolean } | undefined {
 	if (typeof raw !== "string" || raw.length > 512) return undefined;
 	const text = raw.replace(/\x1b\[[0-9;:]*m/g, "");
-	const match = /^[○●] 🐴 ponytail: (🌿 LITE|⚡ FULL|🔥 ULTRA| REVIEW)$/.exec(text);
+	const match = /^([○●]) 🐴 ponytail: (🌿 LITE|⚡ FULL|🔥 ULTRA| REVIEW)$/.exec(text);
 	if (!match) return undefined;
-	return ({ "🌿 LITE": "lite", "⚡ FULL": "full", "🔥 ULTRA": "ultra", " REVIEW": "review" } as const)[match[1] as "🌿 LITE" | "⚡ FULL" | "🔥 ULTRA" | " REVIEW"];
+	const mode = ({ "🌿 LITE": "lite", "⚡ FULL": "full", "🔥 ULTRA": "ultra", " REVIEW": "review" } as const)[match[2] as "🌿 LITE" | "⚡ FULL" | "🔥 ULTRA" | " REVIEW"];
+	return { mode, active: match[1] === "●" };
 }
-type PonytailObserver = { read(): { mode: PonytailState; statuses: ReadonlyMap<string, string> }; dispose(): void };
+type PonytailObserver = { read(): { mode: PonytailState; active: boolean; statuses: ReadonlyMap<string, string> }; dispose(): void };
 type Selection = { version: 1; path: string };
 // Decoration only: owned by one installed TUI footer and never triggers inspection.
 type Animation = { state: MotionState; timer?: ReturnType<typeof setTimeout>; due?: number; schedule(now: number): void; resume(): void };
@@ -169,11 +171,11 @@ export default function (pi: ExtensionAPI) {
 	type StatusTap = { original: ExtensionContext["ui"]["setStatus"]; wrapped: ExtensionContext["ui"]["setStatus"]; receive?: (text: string | undefined) => void };
 	const statusTaps = new WeakMap<ExtensionContext["ui"], StatusTap>();
 	function observePonytail(s: SessionState, getStatuses: () => ReadonlyMap<string, string>): PonytailObserver {
-		let live = true, initializing = true, detach = () => {};
+		let live = true, initializing = true, active = false, detach = () => {};
 		let ui: ExtensionContext["ui"] | undefined;
 		const owned = () => live && current(s) && s.ctx.mode === "tui" && s.ctx.sessionManager.getSessionId() === s.id;
-		const publish = (mode: PonytailState) => {
-			if (owned() && s.ponytail !== mode) { s.ponytail = mode; s.requestRender?.(); }
+		const publish = (mode: PonytailState, nowActive: boolean) => {
+			if (owned() && (s.ponytail !== mode || active !== nowActive)) { s.ponytail = mode; active = nowActive; s.requestRender?.(); }
 		};
 		const attach = () => {
 			const next = s.ctx.ui;
@@ -195,7 +197,8 @@ export default function (pi: ExtensionAPI) {
 				if (!owned() || s.ctx.ui !== next) return;
 				initializing = false;
 				s.ponytailClearUI = text === undefined ? next : undefined;
-				publish(text === undefined ? "off" : ponytailMode(text) ?? "unknown");
+				const known = text === undefined ? undefined : ponytailStatus(text);
+				publish(text === undefined ? "off" : known?.mode ?? "unknown", known?.active === true);
 			};
 			tap.receive = receive;
 			// A foreign wrapper above our tap is left intact; it must delegate to
@@ -208,18 +211,18 @@ export default function (pi: ExtensionAPI) {
 			};
 		};
 		const read = () => {
-			if (!owned()) return { mode: "unknown" as const, statuses: getStatuses() };
+			if (!owned()) return { mode: "unknown" as const, active: false, statuses: getStatuses() };
 			attach(); // public UI can be replaced on reload; never patch runner internals
-			const statuses = getStatuses(), raw = statuses.get("ponytail"), known = ponytailMode(raw);
+			const statuses = getStatuses(), raw = statuses.get("ponytail"), known = ponytailStatus(raw);
 			if (raw !== undefined) { initializing = false; s.ponytailClearUI = undefined; }
-			const mode: PonytailState = known ?? (raw !== undefined ? "unknown" : s.ponytailClearUI === ui ? "off" : initializing ? "checking" : "unknown");
-			if (!known) return { mode, statuses };
+			const mode: PonytailState = known?.mode ?? (raw !== undefined ? "unknown" : s.ponytailClearUI === ui ? "off" : initializing ? "checking" : "unknown");
+			if (!known) return { mode, active: false, statuses };
 			const rest = new Map(statuses); rest.delete("ponytail");
-			return { mode, statuses: rest }; // presentation only; host map stays intact
+			return { mode, active: known.active, statuses: rest }; // presentation only; host map stays intact
 		};
 		attach();
 		// One bounded initialization turn, not polling. Missing never means OFF.
-		const timer = setTimeout(() => { initializing = false; if (owned()) publish(read().mode); }, 0); timer.unref();
+		const timer = setTimeout(() => { initializing = false; if (owned()) { const now = read(); publish(now.mode, now.active); } }, 0); timer.unref();
 		return { read, dispose() { live = false; clearTimeout(timer); detach(); } };
 	}
 
@@ -312,7 +315,7 @@ export default function (pi: ExtensionAPI) {
 					return {
 						homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr,
 						contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(),
-						statuses: ponytail.statuses, activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions, ponytail: ponytail.mode,
+						statuses: ponytail.statuses, activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions, ponytail: ponytail.mode, ponytailActive: ponytail.active,
 					};
 				};
 				s.units = null;

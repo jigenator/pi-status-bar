@@ -49,7 +49,7 @@ For reliable startup/restoration, when separately enabling this integration:
 
 Recognized Ponytail status is represented by the plate instead of duplicated in EXT. Host status data is untouched, every **other key** remains intact, and unrecognized Ponytail warnings/text remain sanitized in EXT alongside UNK. There is no Ponytail RPC, runtime import, polling, prompt/session/default inference or producer patch. A narrow reversible observer of public `ctx.ui.setStatus` distinguishes clear from absence; this relies on tested Pi 1.0.4 shared-UI behavior, not a documented subscription API. See [architecture](docs/architecture.md#ponytail-status-integration).
 
-The white plate and black icon/title/slashes stay static. Only the three current mode letters can flash two seeded random subsets black, then recover; no sweep or scrambling. First discovery, OFF/CHK/UNK and motion off settle immediately. Activity-dot changes do not restart mode flashes; resuming motion does not replay off-time changes.
+The white plate and black title/slashes stay static. While Ponytail reports the agent is running a turn (its own `●` dot), the `⌑` icon alternates with a small pink `•` light (the CMP pink), 200 ms each; `/footer-motion off` holds the light on instead. On a mode change, only the three current mode letters can flash two seeded random subsets black, then recover; no sweep or scrambling. First discovery, OFF/CHK/UNK and motion off settle immediately. Activity-dot changes drive only the light and do not restart mode flashes; resuming motion does not replay off-time changes.
 
 No live interactive-terminal/motion or live fleet-owner smoke test is claimed; automated tests use the installed Pi loader and public bus with offline replies.
 

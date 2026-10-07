@@ -574,6 +574,11 @@ test("PNYTL parses only bounded exact styled format; preserves malformed/warning
 		assert.match(h.text(), /04 EXT/);
 		assert.doesNotMatch(h.component.render(300).join(""), /\x1b\[2J|\x1b\]|\u202e/);
 	}
+	// Ponytail's ● activity dot lights the plate (held lit with motion off); ○ restores the icon.
+	h.setStatus("ponytail", ponytailText("full", true)); assert.match(h.text(), /• PNYTL \/\/ FUL/); assert.doesNotMatch(h.text(), /⌑/);
+	h.setStatus("ponytail", ponytailText("full", false)); assert.match(h.text(), /⌑ PNYTL \/\/ FUL/); assert.doesNotMatch(h.text(), /•/);
+	h.setStatus("ponytail", ponytailText("full", true)); h.setStatus("ponytail", undefined);
+	assert.equal(ponytailCode(h), "OFF"); assert.match(h.text(), /⌑ PNYTL \/\/ OFF/, "a clear never leaves the light on");
 	h.setStatus("ponytail", "warning: FULL unavailable"); assert.match(h.text(), /warning: FULL unavailable/);
 	h.setStatus("ponytail", ponytailText("lite")); h.statuses.delete("ponytail");
 	assert.equal(ponytailCode(h), "UNK", "map absence without observed clear is not OFF");
