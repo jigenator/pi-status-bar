@@ -37,7 +37,6 @@ const tatsuLook = (c: TatsuComponent): { shape: string; code: string; ink: Hue }
 };
 // Plain text per component, `TCLI <shape> <code>` (single-width glyphs), three field cells apart.
 const TATSU_GAP = 3;
-const tatsuWidth = (snapshot: TatsuSnapshot) => snapshot.components.reduce((n, c) => n + 7 + tatsuLook(c).code.length, 0) + TATSU_GAP * (snapshot.components.length - 1);
 export type FooterSnapshot = {
 	homePath: string;
 	launchPath: string;
@@ -119,6 +118,11 @@ const C = {
 	graphic: rgbColor(0x71, 0x71, 0x71),
 	checkLow: tatsuFadeColors[1], checkMid: tatsuFadeColors[2], checkHigh: tatsuFadeColors[3], checkPeak: tatsuFadeColors[4],
 	warnDim: rgbColor(0x6c, 0x4f, 0x29), // Tatsu beacon, 50% amber over black
+	// Tatsu warm-up steps, 25/50/75% of each state colour over the field (warn 50% is warnDim; grey reuses surface, plate).
+	primary25: rgbColor(0x30, 0x40, 0x01), primary50: rgbColor(0x60, 0x7f, 0x02), primary75: rgbColor(0x90, 0xbe, 0x03),
+	warn25: rgbColor(0x36, 0x28, 0x14), warn75: rgbColor(0xa1, 0x76, 0x3e),
+	high25: rgbColor(0x3c, 0x12, 0x09), high50: rgbColor(0x79, 0x24, 0x12), high75: rgbColor(0xb6, 0x35, 0x1a),
+	graphic50: rgbColor(0x38, 0x38, 0x38),
 	cobalt: rgbColor(0x00, 0x4f, 0xe8), // PNYTL LTE
 	magenta: rgbColor(0xc0, 0x00, 0x92), // PNYTL ULT
 	teal: rgbColor(0x00, 0x6e, 0x70), // PNYTL REV
@@ -389,10 +393,22 @@ export const TATSU_LATCH_TICKS = 3;
 export const TATSU_BEACON_PERIOD_MS = 4000;
 export const TATSU_BEACON_STEP_MS = 50;
 export const TATSU_BEACON_MS = 3 * TATSU_BEACON_STEP_MS;
-// The front reaches the entry's last cell on the final tick: typical plates draw in in ~0.45s; long counts/local
-// edits get enough ticks too.
-const tatsuBootTicks = (snapshot: TatsuSnapshot) => Math.ceil(tatsuWidth(snapshot) / USAGE_SWEEP_CELLS_PER_TICK);
-type TatsuBoot = { at: number; ticks: number };
+// Warm-up on appearance: each part brightens out of the field in four steps of TATSU_WARM_STEP_TICKS, shape first, then
+// code, then label; each component starts TATSU_WARM_STAGGER ticks after the one before. Colour only: every character
+// is the current one from the first frame. 14 ticks (700 ms) for the two components.
+export const TATSU_WARM_STEP_TICKS = 2;
+export const TATSU_WARM_STAGGER = 3;
+const TATSU_WARM_ROLE = { shape: 0, code: 2, label: 4 } as const;
+export const TATSU_WARM_TICKS = TATSU_WARM_STAGGER + TATSU_WARM_ROLE.label + 3 * TATSU_WARM_STEP_TICKS + 1;
+const TATSU_WARM_INKS: Partial<Record<Hue, readonly [Hue, Hue, Hue]>> = {
+	primary: ["primary25", "primary50", "primary75"], warn: ["warn25", "warnDim", "warn75"],
+	high: ["high25", "high50", "high75"], graphic: ["surface", "graphic50", "plate"],
+};
+/** One cell group's warm-up colour on tick `k` (negative before it starts): the field, a 25/50/75% step, then `ink`. */
+const tatsuWarmInk = (ink: Hue, k: number, component: number, role: keyof typeof TATSU_WARM_ROLE): Hue => {
+	const step = Math.floor((k - component * TATSU_WARM_STAGGER - TATSU_WARM_ROLE[role]) / TATSU_WARM_STEP_TICKS);
+	return step < 0 ? "field" : step < 3 ? TATSU_WARM_INKS[ink]?.[step] ?? ink : ink;
+};
 
 type StrikeKind = "heavy" | "void" | "flash" | "mid" | "light" | "worn";
 type GhostSpec = { hide: true } | { ch: string; fg: Hue | "@edge" | "@edgeL" };
@@ -412,7 +428,7 @@ export type MotionState = Readonly<{
 	tatsu?: TatsuSnapshot;
 	/** Last completed result survives checking, but not invalid/inactive transitions. */
 	tatsuCompleted?: TatsuSnapshot;
-	tatsuBoot?: TatsuBoot;
+	tatsuWarm?: number;
 	tatsuLatches: Readonly<Partial<Record<TatsuComponent["component"], number>>>;
 	cursor: number;
 	epoch: number;
@@ -452,7 +468,8 @@ type UsageMemory = Readonly<{ stamp: number; lit?: number; period?: number }>;
 export type UsageEffect = Readonly<{ edge?: number; burn?: { from: number; to: number; elapsed: number } }>;
 /** Everything the renderer needs for one decoration frame; values are never part of it. */
 export type FooterFrame = Readonly<{
-	tatsuBoot?: number;
+	/** Warm-up tick, negative while it waits for the footer boot to reach EXT. */
+	tatsuWarm?: number;
 	tatsuCheck?: number;
 	tatsuBeacon?: number;
 	tatsuLatches?: Readonly<Partial<Record<TatsuComponent["component"], number>>>;
@@ -523,6 +540,8 @@ export function startMotion(snapshot: FooterSnapshot, now: number, seed: number,
 	const state: MotionState = {
 		cursor: 0, epoch: now, windowText, percent, crossed: {},
 		tatsu: activeTatsu(snapshot), tatsuCompleted: activeTatsu(snapshot)?.phase === "completed" ? snapshot.tatsu : undefined, tatsuLatches: {},
+		// Present at the footer boot (a reload), Tatsu warms up as the boot reaches EXT; resuming replays nothing.
+		tatsuWarm: boot && activeTatsu(snapshot) ? now + BOOT_AT.ext * TICK : undefined,
 		ponytail: snapshot.ponytail, ponytailKnown: confirmedPonytail(snapshot.ponytail), ponytailGuardUntil,
 		boot: boot ? { at: now, seed: seedFrom(r) } : undefined,
 		numeral: boot ? { from: emptyGrid(13), at: now + NUM_BOOT_T0 * TICK, dur: NUM_MS, seed: seedFrom(r) } : undefined,
@@ -582,18 +601,19 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 
 	// Tatsu is push-driven data; this memory owns decoration only. Checking retains the last completed baseline.
 	const tatsu = activeTatsu(snapshot);
-	if (next.tatsuBoot && ticksSince(next.tatsuBoot.at, now) >= next.tatsuBoot.ticks) set("tatsuBoot", undefined);
+	if (next.tatsuWarm !== undefined && ticksSince(next.tatsuWarm, now) >= TATSU_WARM_TICKS) set("tatsuWarm", undefined);
 	const latches: Partial<Record<TatsuComponent["component"], number>> = {};
 	for (const [component, at] of Object.entries(next.tatsuLatches) as [TatsuComponent["component"], number][]) if (ticksSince(at, now) < TATSU_LATCH_TICKS) latches[component] = at;
-	if (!tatsu) { set("tatsuBoot", undefined); set("tatsuCompleted", undefined); }
+	if (!tatsu) { set("tatsuWarm", undefined); set("tatsuCompleted", undefined); }
 	else {
-		if (!state.tatsu && !booting(next, now)) set("tatsuBoot", { at: now, ticks: tatsuBootTicks(tatsu) });
+		// Appearing during the footer boot waits for the boot to reach EXT, like a reload.
+		if (!state.tatsu) set("tatsuWarm", booting(next, now) ? Math.max(now, next.boot!.at + BOOT_AT.ext * TICK) : now);
 		if (tatsu.phase === "completed") {
 			for (const c of tatsu.components) {
 				const previous = state.tatsuCompleted?.components.find((p) => p.component === c.component);
 				if (previous && tatsuKey(previous) !== tatsuKey(c)) {
 					delete latches[c.component];
-					if (c.state !== "inactive" && previous.state !== "inactive" && !booting(next, now) && !next.tatsuBoot) latches[c.component] = now;
+					if (c.state !== "inactive" && previous.state !== "inactive" && !booting(next, now) && next.tatsuWarm === undefined) latches[c.component] = now;
 				}
 			}
 			set("tatsuCompleted", tatsu);
@@ -711,9 +731,9 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 		const k = event ? ticksSince(event.at, now) : -1;
 		if (event && k >= 0 && k < event.dur) frame[key] = { k, items: event.items };
 	}
-	if (state.tatsuBoot) {
-		const k = ticksSince(state.tatsuBoot.at, now);
-		if (k >= 0 && k < state.tatsuBoot.ticks) frame.tatsuBoot = k;
+	if (state.tatsuWarm !== undefined) {
+		const k = ticksSince(state.tatsuWarm, now);
+		if (k < TATSU_WARM_TICKS) frame.tatsuWarm = k;
 	}
 	const tatsuLatches: Partial<Record<TatsuComponent["component"], number>> = {};
 	for (const [component, at] of Object.entries(state.tatsuLatches) as [TatsuComponent["component"], number][]) {
@@ -803,7 +823,7 @@ export function nextMotionDelay(state: MotionState, now: number): number {
 		const step = BURN_STEPS.find((at) => at > now - burn.at);
 		if (step !== undefined) due = Math.min(due, burn.at + step);
 	}
-	if (state.tatsuBoot) tickOf(state.tatsuBoot.at, state.tatsuBoot.ticks);
+	if (state.tatsuWarm !== undefined) tickOf(state.tatsuWarm, TATSU_WARM_TICKS);
 	for (const at of Object.values(state.tatsuLatches)) if (at !== undefined) tickOf(at, TATSU_LATCH_TICKS);
 	if (state.tatsu?.components.some((c) => c.state === "checking")) due = Math.min(due, state.epoch + (Math.floor((now - state.epoch) / TATSU_CHECK_STEP_MS) + 1) * TATSU_CHECK_STEP_MS);
 	if (state.tatsu?.components.some((c) => c.state === "behind" || c.state === "repair")) {
@@ -1165,8 +1185,8 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		const base: Style = !inBoot || k > value + 1 ? {} : k < at ? { fg: "secondary" } : k < at + 2 ? { bold: true } : k === value ? { fg: "primary", bold: true } : k === value + 1 ? { bold: true } : {};
 		const fg = foregroundAnsi(C[base.fg ?? "text"], mode) + (base.bold ? "\x1b[1m" : ""), bg = backgroundAnsi(C.field, mode);
 		if (key === "tatsu-status" && tatsu) {
-			const held = inBoot || frame.tatsuBoot !== undefined;
-			const parts = tatsu.components.map((c) => {
+			const warm = frame.tatsuWarm, held = inBoot || warm !== undefined;
+			const parts = tatsu.components.map((c, p) => {
 				const look = tatsuLook(c), latch = held ? undefined : frame.tatsuLatches?.[c.component], checking = c.state === "checking" && !held;
 				// Checking fades only the code's colour; the label and grey shape stay put.
 				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: "field", bg: look.ink, bold: true } : { fg: look.ink, bold: true };
@@ -1175,14 +1195,13 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 				const attention = c.state === "behind" || c.state === "repair";
 				const shape = checking ? TATSU_CHECK_GLYPHS[(frame.tatsuCheck ?? 0) % TATSU_CHECK_GLYPHS.length] : attention && beacon !== undefined && beacon < 2 ? "▴" : look.shape;
 				const shapeInk = attention && beacon !== undefined && beacon > 0 ? { ...ink, fg: "warnDim" as const } : ink;
-				// The dim label leaves the coloured state to carry the reading.
-				const part = paint(c.component === "tatsu-cli" ? "TCLI" : "AWKS", { fg: "graphic" }) + paint(" ") + paint(shape, shapeInk) + paint(" ", ink) + paint(look.code, codeInk);
-				// During the footer boot use EXT's existing treatment, not an independent draw-in.
-				return inBoot ? paint(stripTerminalSequences(part), base) : part;
+				// The dim label leaves the coloured state to carry the reading. The warm-up replaces EXT's boot treatment.
+				const tone = (style: Style, role: keyof typeof TATSU_WARM_ROLE): Style => warm === undefined ? style : { ...style, fg: tatsuWarmInk(style.fg ?? "text", warm, p, role) };
+				return paint(c.component === "tatsu-cli" ? "TCLI" : "AWKS", tone({ fg: "graphic" }, "label")) + paint(" ") + paint(shape, tone(shapeInk, "shape")) + paint(" ", ink) + paint(look.code, tone(codeInk, "code"));
 			});
-			return { parts, text: "", front: !inBoot && frame.tatsuBoot !== undefined ? (frame.tatsuBoot + 1) * USAGE_SWEEP_CELLS_PER_TICK : Infinity };
+			return { parts, text: "" };
 		}
-		return { parts: undefined, text: fg + bg + restoreBase(safeText(status, true), fg, bg), front: Infinity };
+		return { parts: undefined, text: fg + bg + restoreBase(safeText(status, true), fg, bg) };
 	});
 
 	/* ---------- USG: one fixed column per provider, squares over countdowns; motion restyles, never moves ---------- */
@@ -1345,17 +1364,13 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		}
 		statuses.forEach((status, i) => {
 			let label = i === 0 ? paint(` ${LABEL.ext} `, GREY_PLATE) + gap() : "";
-			// At sub-plate widths the label cannot share a line with the first word. Keep label cells out of the sweep.
+			// At sub-plate widths the label cannot share a line with the first Tatsu part.
 			if (status.parts && label && W < 9) {
 				for (const line of wrap(label, W)) lines.push(serialize(runPad(line, W)));
 				label = "";
 			}
 			const statusLines = status.parts ? tatsuLines(status.parts, label ? W - 9 : W, W, !!label).map((line, j) => (j === 0 ? label + line : line)) : wrap(label + status.text, W);
-			statusLines.forEach((line, j) => {
-				const prefix = label && j === 0 ? Math.min(9, W) : 0;
-				const drawn = status.front === Infinity ? line : sliceByColumn(line, 0, prefix) + drawInText(sliceByColumn(line, prefix, W), 0, status.front);
-				lines.push(serialize(runPad(drawn, W)));
-			});
+			for (const line of statusLines) lines.push(serialize(runPad(line, W)));
 		});
 		return lines;
 	}
@@ -1568,7 +1583,7 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		if (i === 0) plateRows.set("ext", header.length + body.length);
 		if (!status.parts) { body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status.text, FW)); return; }
 		tatsuLines(status.parts, FW, FW, false).forEach((line, j) => {
-			body.push([...(i === 0 && j === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : blanks(P)), ...blanks(1), ...runPad(drawInText(line, 0, status.front), FW, "field", false)]);
+			body.push([...(i === 0 && j === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : blanks(P)), ...blanks(1), ...runPad(line, FW, "field", false)]);
 		});
 	});
 
