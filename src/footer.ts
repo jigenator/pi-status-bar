@@ -1,6 +1,6 @@
 import { basename, dirname, isAbsolute, relative, sep } from "node:path";
 import type { ContextUsage, Theme } from "@earendil-works/pi-coding-agent";
-import { backgroundAnsi, foregroundAnsi, rgbColor, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { backgroundAnsi, foregroundAnsi, rgbColor, stripTerminalSequences, sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { UsageProviderId, UsageWindow, UsageWindows } from "./usage.ts";
 import type { CheckoutInfo, PullRequestInfo, WorkspaceInfo } from "./workspace.ts";
 
@@ -15,6 +15,24 @@ export type UsageSample = { windows: UsageWindows; updatedAt: number | null; fet
 export type UsageProviderState = { provider: UsageProviderId; data?: UsageSample; failure?: "timeout" | "failed" };
 /** Supplied only once CodexBar is known to be installed. `now` is wall-clock epoch ms from the adapter. */
 export type FooterUsage = { now: number; providers: readonly UsageProviderState[] };
+/** Minimal validated public Tatsu v1 data; no provider prose or identifiers. */
+export type TatsuComponent = { component: "tatsu-cli" | "agent-workspace"; state: "inactive" | "checking" | "current" | "behind" | "repair" | "local_changes" | "missing" | "not_runnable" | "unavailable"; commitsBehind?: number; localChanges?: boolean };
+export type TatsuSnapshot = { phase: "inactive" | "checking" | "completed"; components: readonly TatsuComponent[] };
+const activeTatsu = (snapshot: FooterSnapshot) => snapshot.tatsu && snapshot.tatsu.phase !== "inactive" ? snapshot.tatsu : undefined;
+const tatsuKey = (c: TatsuComponent) => `${c.state}/${c.commitsBehind ?? "?"}/${c.localChanges ?? "?"}`;
+const tatsuLook = (c: TatsuComponent): { shape: string; word: string; ink: Hue } => {
+	switch (c.state) {
+		case "current": return { shape: "●", word: "current", ink: "primary" };
+		case "behind": return { shape: "▲", word: `update${c.commitsBehind === undefined ? "" : ` ×${c.commitsBehind}`}${c.localChanges === true ? " ◆ local edits" : ""}`, ink: "warn" };
+		case "repair": return { shape: "▲", word: `repair${c.localChanges === true ? " ◆ local edits" : ""}`, ink: "warn" };
+		case "local_changes": return { shape: "◆", word: "local edits", ink: "warn" };
+		case "missing": return { shape: "✕", word: "not installed", ink: "high" };
+		case "not_runnable": return { shape: "✕", word: "not runnable", ink: "high" };
+		case "unavailable": return { shape: "✕", word: "unavailable", ink: "high" };
+		case "checking": return { shape: "·", word: "checking", ink: "graphic" };
+		case "inactive": return { shape: "·", word: "inactive", ink: "graphic" };
+	}
+};
 export type FooterSnapshot = {
 	homePath: string;
 	launchPath: string;
@@ -25,6 +43,8 @@ export type FooterSnapshot = {
 	model?: { id: string; provider: string; contextWindow: number };
 	thinking: string;
 	statuses: ReadonlyMap<string, string>;
+	/** Active validated Tatsu status replaces only its EXT entry, at the same sorted key. */
+	tatsu?: TatsuSnapshot;
 	activity?: FooterActivity;
 	/** Optional for renderer compatibility; the native adapter always supplies a state. */
 	ponytail?: PonytailState;
@@ -75,6 +95,11 @@ export function safeText(input: string, allowStyles = false): string {
 	return result.trim();
 }
 
+export const TATSU_CHECK_FADE_LEVELS = ["#555555", "#636363", "#717171", "#858585", "#9a9a9a", "#858585", "#717171", "#636363"] as const;
+const tatsuFadeColors = TATSU_CHECK_FADE_LEVELS.map((hex) => {
+	const level = parseInt(hex.slice(1, 3), 16);
+	return rgbColor(level, level, level);
+});
 // Selected "01 — Acid / Black" palette. Fixed by design rather than taken from the host theme.
 const C = {
 	field: rgbColor(0x00, 0x00, 0x00),
@@ -86,6 +111,9 @@ const C = {
 	warn: rgbColor(0xd7, 0x9e, 0x52),
 	high: rgbColor(0xf2, 0x47, 0x23),
 	graphic: rgbColor(0x71, 0x71, 0x71),
+	checkLow: tatsuFadeColors[0], checkMidLow: tatsuFadeColors[1],
+	checkMidHigh: tatsuFadeColors[3], checkHigh: tatsuFadeColors[4],
+	warnDim: rgbColor(0x6c, 0x4f, 0x29), // Tatsu beacon, 50% amber over black
 	cobalt: rgbColor(0x00, 0x4f, 0xe8), // PNYTL LTE
 	magenta: rgbColor(0xc0, 0x00, 0x92), // PNYTL ULT
 	teal: rgbColor(0x00, 0x6e, 0x70), // PNYTL REV
@@ -347,6 +375,17 @@ const USAGE_ROW_CELLS = ` ${LABEL.usg} `.length + 1 - USAGE_GAP
 	+ Object.values(USAGE).reduce((sum, look) => sum + usageColumn(Math.min(look.windows.length + 1, USAGE_WINDOWS.length)) + USAGE_GAP, 0);
 export const USAGE_BOOT_TICKS = Math.ceil(USAGE_ROW_CELLS / USAGE_SWEEP_CELLS_PER_TICK) + 1;
 
+export const TATSU_CHECK_STEP_MS = 150;
+const TATSU_CHECK_FADE_INKS: readonly Hue[] = ["checkLow", "checkMidLow", "graphic", "checkMidHigh", "checkHigh", "checkMidHigh", "graphic", "checkMidLow"];
+export const TATSU_CHECK_GLYPHS = ["·", "•", "●", "•", "·"] as const;
+export const TATSU_LATCH_TICKS = 3;
+export const TATSU_BEACON_PERIOD_MS = 4000;
+export const TATSU_BEACON_STEP_MS = 50;
+export const TATSU_BEACON_MS = 3 * TATSU_BEACON_STEP_MS;
+// Typical status draws in in ~0.7s; long counts/local-edits combinations get enough ticks too.
+const tatsuBootTicks = (snapshot: TatsuSnapshot) => Math.ceil((7 + snapshot.components.reduce((n, c) => n + 6 + tatsuLook(c).word.length, 0) + 3) / USAGE_SWEEP_CELLS_PER_TICK);
+type TatsuBoot = { at: number; ticks: number };
+
 type StrikeKind = "heavy" | "void" | "flash" | "mid" | "light" | "worn";
 type GhostSpec = { hide: true } | { ch: string; fg: Hue | "@edge" | "@edgeL" };
 // Ghost positions are semantic, resolved against the current layout each frame.
@@ -362,6 +401,11 @@ type MotionEvent = { at: number; dur: number; items: MotionItem[] };
 
 /** Decoration memory only. Displayed values always come from the current snapshot. */
 export type MotionState = Readonly<{
+	tatsu?: TatsuSnapshot;
+	/** Last completed result survives checking, but not invalid/inactive transitions. */
+	tatsuCompleted?: TatsuSnapshot;
+	tatsuBoot?: TatsuBoot;
+	tatsuLatches: Readonly<Partial<Record<TatsuComponent["component"], number>>>;
 	cursor: number;
 	epoch: number;
 	boot?: { at: number; seed: number };
@@ -400,6 +444,10 @@ type UsageMemory = Readonly<{ stamp: number; lit?: number; period?: number }>;
 export type UsageEffect = Readonly<{ edge?: number; burn?: { from: number; to: number; elapsed: number } }>;
 /** Everything the renderer needs for one decoration frame; values are never part of it. */
 export type FooterFrame = Readonly<{
+	tatsuBoot?: number;
+	tatsuCheck?: number;
+	tatsuBeacon?: number;
+	tatsuLatches?: Readonly<Partial<Record<TatsuComponent["component"], number>>>;
 	boot: number;
 	bootSeed: number;
 	cal: number;
@@ -466,6 +514,7 @@ export function startMotion(snapshot: FooterSnapshot, now: number, seed: number,
 	const quiet = boot ? now + (BOOT_TICKS + 1) * TICK : now, row = usageRow(snapshot);
 	const state: MotionState = {
 		cursor: 0, epoch: now, windowText, percent, crossed: {},
+		tatsu: activeTatsu(snapshot), tatsuCompleted: activeTatsu(snapshot)?.phase === "completed" ? snapshot.tatsu : undefined, tatsuLatches: {},
 		ponytail: snapshot.ponytail, ponytailKnown: confirmedPonytail(snapshot.ponytail), ponytailGuardUntil,
 		boot: boot ? { at: now, seed: seedFrom(r) } : undefined,
 		numeral: boot ? { from: emptyGrid(13), at: now + NUM_BOOT_T0 * TICK, dur: NUM_MS, seed: seedFrom(r) } : undefined,
@@ -522,6 +571,29 @@ export function advanceMotion(state: MotionState, snapshot: FooterSnapshot, now:
 		}
 		set("ponytail", snapshot.ponytail);
 	}
+
+	// Tatsu is push-driven data; this memory owns decoration only. Checking retains the last completed baseline.
+	const tatsu = activeTatsu(snapshot);
+	if (next.tatsuBoot && ticksSince(next.tatsuBoot.at, now) >= next.tatsuBoot.ticks) set("tatsuBoot", undefined);
+	const latches: Partial<Record<TatsuComponent["component"], number>> = {};
+	for (const [component, at] of Object.entries(next.tatsuLatches) as [TatsuComponent["component"], number][]) if (ticksSince(at, now) < TATSU_LATCH_TICKS) latches[component] = at;
+	if (!tatsu) { set("tatsuBoot", undefined); set("tatsuCompleted", undefined); }
+	else {
+		if (!state.tatsu && !booting(next, now)) set("tatsuBoot", { at: now, ticks: tatsuBootTicks(tatsu) });
+		if (tatsu.phase === "completed") {
+			for (const c of tatsu.components) {
+				const previous = state.tatsuCompleted?.components.find((p) => p.component === c.component);
+				if (previous && tatsuKey(previous) !== tatsuKey(c)) {
+					delete latches[c.component];
+					if (c.state !== "inactive" && previous.state !== "inactive" && !booting(next, now) && !next.tatsuBoot) latches[c.component] = now;
+				}
+			}
+			set("tatsuCompleted", tatsu);
+		}
+	}
+	if (!tatsu || tatsu.phase !== "completed") for (const key of Object.keys(latches) as TatsuComponent["component"][]) delete latches[key];
+	if (["tatsu-cli", "agent-workspace"].some((key) => latches[key as TatsuComponent["component"]] !== next.tatsuLatches[key as TatsuComponent["component"]])) set("tatsuLatches", latches);
+	set("tatsu", tatsu);
 
 	// Observe the real context value.
 	const { percent, windowText } = contextOf(snapshot);
@@ -631,6 +703,19 @@ export function motionFrame(state: MotionState, now: number): FooterFrame {
 		const k = event ? ticksSince(event.at, now) : -1;
 		if (event && k >= 0 && k < event.dur) frame[key] = { k, items: event.items };
 	}
+	if (state.tatsuBoot) {
+		const k = ticksSince(state.tatsuBoot.at, now);
+		if (k >= 0 && k < state.tatsuBoot.ticks) frame.tatsuBoot = k;
+	}
+	const tatsuLatches: Partial<Record<TatsuComponent["component"], number>> = {};
+	for (const [component, at] of Object.entries(state.tatsuLatches) as [TatsuComponent["component"], number][]) {
+		const k = ticksSince(at, now);
+		if (k >= 0 && k < TATSU_LATCH_TICKS) tatsuLatches[component] = k;
+	}
+	if (Object.keys(tatsuLatches).length) frame.tatsuLatches = tatsuLatches;
+	frame.tatsuCheck = Math.floor(Math.max(0, now - state.epoch) / TATSU_CHECK_STEP_MS);
+	const beaconAt = Math.max(0, now - state.epoch) % TATSU_BEACON_PERIOD_MS - (TATSU_BEACON_PERIOD_MS - TATSU_BEACON_MS);
+	if (beaconAt >= 0) frame.tatsuBeacon = Math.floor(beaconAt / TATSU_BEACON_STEP_MS);
 	if (state.usageBoot !== undefined) {
 		const k = ticksSince(state.usageBoot, now);
 		if (k >= 0 && k < USAGE_BOOT_TICKS) frame.usageBoot = k;
@@ -709,6 +794,14 @@ export function nextMotionDelay(state: MotionState, now: number): number {
 	for (const burn of Object.values(state.usageBurns)) {
 		const step = BURN_STEPS.find((at) => at > now - burn.at);
 		if (step !== undefined) due = Math.min(due, burn.at + step);
+	}
+	if (state.tatsuBoot) tickOf(state.tatsuBoot.at, state.tatsuBoot.ticks);
+	for (const at of Object.values(state.tatsuLatches)) if (at !== undefined) tickOf(at, TATSU_LATCH_TICKS);
+	if (state.tatsu?.components.some((c) => c.state === "checking")) due = Math.min(due, state.epoch + (Math.floor((now - state.epoch) / TATSU_CHECK_STEP_MS) + 1) * TATSU_CHECK_STEP_MS);
+	if (state.tatsu?.components.some((c) => c.state === "behind" || c.state === "repair")) {
+		const phase = Math.max(0, now - state.epoch) % TATSU_BEACON_PERIOD_MS, start = TATSU_BEACON_PERIOD_MS - TATSU_BEACON_MS;
+		const at = [start, start + TATSU_BEACON_STEP_MS, start + 2 * TATSU_BEACON_STEP_MS, TATSU_BEACON_PERIOD_MS].find((at) => at > phase)!;
+		due = Math.min(due, now + at - phase);
 	}
 	// USG row-boot front and fill-in latch on 50 ms ticks.
 	if (state.usageBoot !== undefined) tickOf(state.usageBoot, USAGE_BOOT_TICKS);
@@ -1013,14 +1106,38 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 		+ paint(lit ? "•" : "⌑", { fg: lit ? "pink" : "field", bg: "text", bold: true }) + paint(" PNYTL // ", { fg: "field", bg: "text", bold: true })
 		+ [...ponytail.code].map((ch, i) => paint(ch, { fg: confirmedPonytail(snapshot.ponytail) && snapshot.ponytail !== "off" && ((frame.ponytailMask ?? 0) & (1 << i)) ? "field" : ponytail.ink, bg: "text", bold: true })).join("")
 		+ paint(" ", { fg: "field", bg: "text", bold: true }) + gap() : "";
+	// The same for pre-styled single-width text (single-width characters only) whose first cell is at x: its settled part, the
+	// front repainted from its characters, and nothing past the front; callers pad with blank field.
+	const drawInText = (text: string, x: number, front: number) => {
+		if (front === Infinity) return text;
+		const settled = Math.max(0, front - USAGE_SWEEP_CELLS_PER_TICK - x);
+		return truncateToWidth(text, settled, "") + paint([...stripTerminalSequences(text)].slice(settled, Math.max(0, front - x)).join(""), LOCKED);
+	};
 	const mode = theme.getColorMode();
 	// Keep every status and its own colors; sorting keeps row order stable. Boot settles statuses one after another.
-	const entries = [...snapshot.statuses].sort(([a], [b]) => a.localeCompare(b));
-	const statuses = entries.map(([, status], g) => {
+	const tatsu = activeTatsu(snapshot), statusMap = new Map(snapshot.statuses);
+	if (tatsu) statusMap.set("tatsu-status", "");
+	const entries = [...statusMap].sort(([a], [b]) => a.localeCompare(b));
+	const statuses = entries.map(([key, status], g) => {
 		const at = BOOT_AT.ext + g * 3, value = at + 3;
 		const base: Style = !inBoot || k > value + 1 ? {} : k < at ? { fg: "secondary" } : k < at + 2 ? { bold: true } : k === value ? { fg: "primary", bold: true } : k === value + 1 ? { bold: true } : {};
 		const fg = foregroundAnsi(C[base.fg ?? "text"], mode) + (base.bold ? "\x1b[1m" : ""), bg = backgroundAnsi(C.field, mode);
-		return fg + bg + restoreBase(safeText(status, true), fg, bg);
+		if (key === "tatsu-status" && tatsu) {
+			const held = inBoot || frame.tatsuBoot !== undefined;
+			const styled = paint("tatsu", { fg: "secondary" }) + paint("  ") + tatsu.components.map((c) => {
+				const look = tatsuLook(c), latch = held ? undefined : frame.tatsuLatches?.[c.component];
+				const ink: Style = latch === 0 ? LOCKED : latch === 1 || latch === 2 ? { fg: "field", bg: look.ink, bold: true } : { fg: look.ink, bold: true };
+				const beacon = held || latch !== undefined ? undefined : frame.tatsuBeacon;
+				const attention = c.state === "behind" || c.state === "repair";
+				const shape = c.state === "checking" && !held ? TATSU_CHECK_GLYPHS[(frame.tatsuCheck ?? 0) % TATSU_CHECK_GLYPHS.length] : attention && beacon !== undefined && beacon < 2 ? "▴" : look.shape;
+				const shapeInk = attention && beacon !== undefined && beacon > 0 ? { ...ink, fg: "warnDim" as const } : ink;
+				const wordInk = c.state === "checking" && !held && frame.tatsuCheck !== undefined ? { ...ink, fg: TATSU_CHECK_FADE_INKS[frame.tatsuCheck % TATSU_CHECK_FADE_INKS.length] } : ink;
+				return paint(c.component === "tatsu-cli" ? "CLI" : "WKS", { fg: "secondary", bold: true }) + gap() + paint(shape, shapeInk) + paint(` ${look.word}`, wordInk);
+			}).join(paint("   "));
+			// During the footer boot use EXT's existing treatment, not an independent draw-in.
+			return { structured: true, text: inBoot ? paint(stripTerminalSequences(styled), base) : styled, front: !inBoot && frame.tatsuBoot !== undefined ? (frame.tatsuBoot + 1) * USAGE_SWEEP_CELLS_PER_TICK : Infinity };
+		}
+		return { structured: false, text: fg + bg + restoreBase(safeText(status, true), fg, bg), front: Infinity };
 	});
 
 	/* ---------- USG: one fixed column per provider, squares over countdowns; motion restyles, never moves ---------- */
@@ -1126,13 +1243,6 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	const sweep = USAGE_SWEEP_CELLS_PER_TICK, usageTick = frame.usageBoot;
 	const topFront = usageTick === undefined ? Infinity : (usageTick + 1) * sweep, textFront = usageTick === undefined ? Infinity : usageTick * sweep;
 	const drawIn = (x: number, c: Cell, front: number): Cell => (x >= front ? { ch: " ", bg: "field" } : x >= front - sweep ? { ch: c.ch, ...LOCKED } : c);
-	// The same for pre-styled USG text (single-width characters only) whose first cell is at x: its settled part, the
-	// front repainted from its characters, and nothing past the front; callers pad with blank field.
-	const drawInText = (text: string, x: number, front: number) => {
-		if (front === Infinity) return text;
-		const settled = Math.max(0, front - sweep - x);
-		return truncateToWidth(text, settled, "") + paint([...stripTerminalSequences(text)].slice(settled, Math.max(0, front - x)).join(""), LOCKED);
-	};
 	// The USG plate is the Marathon pink (the CMP 3–4 plate pair), black bold lettering at 6.1:1.
 	const usgPlate = letters(` ${LABEL.usg}`.padEnd(8), USG_PLATE);
 
@@ -1188,8 +1298,17 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 			});
 		}
 		statuses.forEach((status, i) => {
-			if (i === 0) add(LABEL.ext, GREY_PLATE, status);
-			else for (const line of wrap(status, W)) lines.push(serialize(runPad(line, W)));
+			let label = i === 0 ? paint(` ${LABEL.ext} `, GREY_PLATE) + gap() : "";
+			// At sub-plate widths the label cannot share a line with the first word. Keep label cells out of the sweep.
+			if (status.structured && label && W < 9) {
+				for (const line of wrap(label, W)) lines.push(serialize(runPad(line, W)));
+				label = "";
+			}
+			wrap(label + status.text, W).forEach((line, j) => {
+				const prefix = label && j === 0 ? Math.min(9, W) : 0;
+				const drawn = status.front === Infinity ? line : sliceByColumn(line, 0, prefix) + drawInText(sliceByColumn(line, prefix, W), 0, status.front);
+				lines.push(serialize(runPad(drawn, W)));
+			});
 		});
 		return lines;
 	}
@@ -1400,7 +1519,10 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 	});
 	statuses.forEach((status, i) => {
 		if (i === 0) plateRows.set("ext", header.length + body.length);
-		body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status, FW));
+		if (!status.structured) { body.push(...fieldRows(i === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : undefined, status.text, FW)); return; }
+		wrap(status.text, FW).forEach((line, j) => {
+			body.push([...(i === 0 && j === 0 ? plate("ext", GREY_PLATE, bootWipe(4)) : blanks(P)), ...blanks(1), ...runPad(drawInText(line, 0, status.front), FW, "field", false)]);
+		});
 	});
 
 	const rows: Part[][] = [header[0]];

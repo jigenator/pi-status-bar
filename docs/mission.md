@@ -13,7 +13,7 @@ Goals:
 - Keep Launch, Pi's working directory, fixed for the session; show Active independently and name Launch only when it differs from Active.
 - Identify Active by branch and Git state when it is a named GitHub repository on a known branch; otherwise show its directory first, followed by its Git state. Retain primary-checkout information in workspace inspection data without adding a footer row.
 - Distinguish absence from unavailable/unknown Git and GitHub information.
-- Preserve current context, model, thinking level, and extension status information. Recognized Ponytail status is represented once in its dedicated PNYTL plate; unknown warnings and every other status stay visible.
+- Preserve current context, model, thinking level, and extension status information. Recognized Ponytail status is represented once in its dedicated PNYTL plate; valid active Tatsu status is structured once in EXT. Unrecognized/invalid/inactive Tatsu data retain the provider’s raw status text, and unknown warnings and every other status stay visible.
 - Always show how many successful compactions are persisted on the selected session branch (CMP), keeping Unknown distinct from zero.
 - Show root working state independently from optional native Active Units (AU), including queued work/workflow containers without claiming an exact running-agent count.
 - Show remaining subscription quota (USG) for Codex, Claude and Kimi 5-hour and weekly windows from the CodexBar CLI, with time to reset, keeping pending, failed, stale and unknown distinct from real values.

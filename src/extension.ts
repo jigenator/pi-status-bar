@@ -5,7 +5,7 @@ import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { advanceMotion, motionFrame, nextMotionDelay, renderFooter, safeText, startMotion, usageRepaintDelay } from "./footer.ts";
-import type { FooterSnapshot, MotionState, PonytailMode, PonytailState, UsageProviderState } from "./footer.ts";
+import type { FooterSnapshot, MotionState, PonytailMode, PonytailState, TatsuSnapshot, TatsuComponent, UsageProviderState } from "./footer.ts";
 import { USAGE_PROVIDERS, fetchUsage } from "./usage.ts";
 import type { UsageProviderId, UsageResult } from "./usage.ts";
 import { inspectPullRequest, inspectWorkspace, resolveActivePath } from "./workspace.ts";
@@ -47,6 +47,20 @@ function ponytailStatus(raw: unknown): { mode: PonytailMode; active: boolean } |
 	const mode = ({ "🌿 LITE": "lite", "⚡ FULL": "full", "🔥 ULTRA": "ultra", " REVIEW": "review" } as const)[match[2] as "🌿 LITE" | "⚡ FULL" | "🔥 ULTRA" | " REVIEW"];
 	return { mode, active: match[1] === "●" };
 }
+// Whitelist only classifications and optional counts/flags. Provider text, detail, reason and SHAs never enter state.
+function tatsuSnapshot(raw: unknown): TatsuSnapshot | undefined {
+	if (!record(raw) || raw.version !== 1 || !["inactive", "checking", "completed"].includes(raw.phase as string) || !Array.isArray(raw.components) || raw.components.length !== 2) return undefined;
+	const components: TatsuComponent[] = [];
+	for (const component of ["tatsu-cli", "agent-workspace"] as const) {
+		const matches = raw.components.filter((c) => record(c) && c.component === component);
+		if (matches.length !== 1) return undefined;
+		const c = matches[0];
+		if (!["inactive", "checking", "current", "behind", "repair", "local_changes", "missing", "not_runnable", "unavailable"].includes(c.state)) return undefined;
+		components.push({ component, state: c.state, ...(count(c.commitsBehind) ? { commitsBehind: c.commitsBehind } : {}), ...(typeof c.localChanges === "boolean" ? { localChanges: c.localChanges } : {}) });
+	}
+	return { phase: raw.phase as TatsuSnapshot["phase"], components };
+}
+type TatsuObserver = { read(): TatsuSnapshot | undefined; dispose(): void };
 type PonytailObserver = { read(): { mode: PonytailState; active: boolean; statuses: ReadonlyMap<string, string> }; dispose(): void };
 type Selection = { version: 1; path: string };
 // Decoration only: owned by one installed TUI footer and never triggers inspection.
@@ -65,6 +79,7 @@ type SessionState = {
 	usageCollector?: { dispose(): void };
 	usageTimer?: ReturnType<typeof setTimeout>;
 	usageDue?: number;
+	tatsuObserver?: TatsuObserver;
 	ponytail: PonytailState;
 	ponytailObserver?: PonytailObserver;
 	ponytailClearUI?: ExtensionContext["ui"];
@@ -98,6 +113,8 @@ export default function (pi: ExtensionAPI) {
 		s.usageCollector = undefined;
 		if (s.usageTimer) clearTimeout(s.usageTimer);
 		s.usageTimer = s.usageDue = undefined;
+		s.tatsuObserver?.dispose();
+		s.tatsuObserver = undefined;
 		s.ponytailObserver?.dispose();
 		s.ponytailObserver = undefined;
 		if (s.timer) clearInterval(s.timer);
@@ -308,6 +325,38 @@ export default function (pi: ExtensionAPI) {
 		return { read, dispose() { live = false; clearTimeout(timer); detach(); } };
 	}
 
+	// Public synchronous discovery plus pushes, with no provider imports, formatter or polling.
+	function observeTatsu(s: SessionState): TatsuObserver {
+		let live = true, latest: TatsuSnapshot | undefined;
+		const ui = s.ctx.ui;
+		const owned = () => live && current(s) && s.tatsuObserver === observer && s.ctx.mode === "tui" && s.ctx.ui === ui && s.ctx.sessionManager.getSessionId() === s.id;
+		const accept = (raw: unknown) => {
+			if (!owned()) return;
+			try { latest = tatsuSnapshot(raw); } catch { latest = undefined; }
+			s.requestRender?.();
+		};
+		const request = () => {
+			if (!owned()) return;
+			latest = undefined;
+			let requesting = true;
+			try {
+				pi.events.emit("tatsu-status:request", { version: 1, reply(api: unknown) {
+					if (!requesting || !owned()) return;
+					try { accept(record(api) && api.version === 1 && typeof api.getSnapshot === "function" ? api.getSnapshot() : undefined); }
+					catch { accept(undefined); }
+				} });
+			} finally { requesting = false; }
+			s.requestRender?.(); // no synchronous reply means absent; never wait
+		};
+		const observer: TatsuObserver = { read: () => owned() ? latest : undefined, dispose() { live = false; offChanged(); offReady(); latest = undefined; } };
+		s.tatsuObserver = observer;
+		// Subscribe before request so either provider load order and restart is recoverable.
+		const offChanged = pi.events.on("tatsu-status:changed", accept);
+		const offReady = pi.events.on("tatsu-status:ready", () => { if (owned()) request(); });
+		request();
+		return observer;
+	}
+
 	async function refreshPR(s: SessionState, workspace: WorkspaceInfo) {
 		if (!current(s)) return;
 		if (workspace.github.kind !== "repository" || workspace.git.kind !== "repository") {
@@ -393,12 +442,15 @@ export default function (pi: ExtensionAPI) {
 				s.requestRender = render;
 				const ponytailObserver = observePonytail(s, () => footerData.getExtensionStatuses());
 				s.ponytailObserver = ponytailObserver;
+				const tatsuObserver = observeTatsu(s);
 				const snapshot = (): FooterSnapshot => {
-					const ponytail = ponytailObserver.read();
+					const ponytail = ponytailObserver.read(), tatsu = tatsuObserver.read();
+					const statuses = new Map(ponytail.statuses);
+					if (tatsu && tatsu.phase !== "inactive") statuses.delete("tatsu-status");
 					return {
 						homePath, launchPath: s.launch, activePath: s.active, workspace: s.workspace, pullRequest: s.pr,
 						contextUsage: s.ctx.getContextUsage(), model: s.ctx.model, thinking: pi.getThinkingLevel(),
-						statuses: ponytail.statuses, activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions, ponytail: ponytail.mode, ponytailActive: ponytail.active,
+						statuses, tatsu, activity: { working: !s.ctx.isIdle(), units: s.units }, compactions: s.compactions, ponytail: ponytail.mode, ponytailActive: ponytail.active,
 						compactionReserve: compactionReserve(pi.getSettings(), s.ctx.model),
 						usage: s.usage.installed ? { now: Date.now(), providers: USAGE_PROVIDERS.map((provider) => s.usage.providers.get(provider) ?? { provider }) } : undefined,
 					};

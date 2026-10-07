@@ -930,3 +930,113 @@ test("USG: shutdown and footer/tree replacement abort in-flight calls, clear tim
 	assert.equal(h.renders, renders, "no repaint after shutdown");
 	assert.deepEqual(h.errors, []);
 });
+
+// Tiny fake of the documented Tatsu public event API: no live CLI/config/formatter.
+async function tatsuProducer(f: any) {
+	const path = join(f.root, "tatsu-producer.ts");
+	await writeFile(path, `export default function(pi) {
+		let snapshot = { version: 1, phase: "inactive", components: ["tatsu-cli", "agent-workspace"].map(component => ({ component, state: "inactive" })) }, ctx, requests = 0;
+		let live = true;
+		const api = { version: 1, getSnapshot() { return live ? snapshot : { ...snapshot, phase: "inactive" }; }, registerFormatter() { throw new Error("consumer must not register a formatter"); } };
+		pi.events.on("tatsu-status:request", r => { requests++; if (live && r.version === 1) r.reply(api); });
+		pi.events.on("test:tatsu", r => {
+			if (r.kind === "count") { r.reply(requests); return; }
+			if (r.kind === "restart") { live = true; pi.events.emit("tatsu-status:ready", api); return; }
+			if (r.kind === "stop") { live = false; return; }
+			if (r.kind === "ready") { pi.events.emit("tatsu-status:ready", api); return; }
+			snapshot = r.snapshot;
+			ctx?.ui.setStatus("tatsu-status", r.text);
+			pi.events.emit("tatsu-status:changed", snapshot);
+		});
+		pi.events.emit("tatsu-status:ready", api);
+		pi.on("session_start", (_, next) => {
+			ctx = next;
+			snapshot = { version: 1, phase: "completed", components: ["tatsu-cli", "agent-workspace"].map(component => ({ component, state: "current", text: "private prose", detail: "private detail", reason: "private reason", installedSha: "private sha" })) };
+			ctx.ui.setStatus("tatsu-status", "tatsu-cli: current | agent-workspace: current");
+			pi.events.emit("tatsu-status:changed", snapshot);
+		});
+	}`);
+	return path;
+}
+const tatsuDTO = (state = "current", options = {}, phase = "completed") => ({ version: 1, phase, components: ["tatsu-cli", "agent-workspace"].map((component) => ({ component, state, ...options })) });
+function pushTatsu(h: any, snapshot: any, ...text: [string | undefined] | []) { h.events.emit("test:tatsu", { snapshot, text: text.length ? text[0] : "raw Tatsu fallback" }); }
+const tatsuRequests = (h: any) => { let n = -1; h.events.emit("test:tatsu", { kind: "count", reply: (value: number) => { n = value; } }); return n; };
+
+test("Tatsu public events: real loader in both orders, replacement/fallback, hidden text, repaint and restart discovery", async (t) => {
+	const f = await fixtures(t), path = await tatsuProducer(f);
+	for (const order of ["before", "after"] as const) {
+		const h = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { [order]: [path], emptyStatuses: true });
+		t.after(() => h.stop()); await h.emitStart(); await h.motion("off");
+		assert.equal(h.subscriptions.get("tatsu-status:changed"), 1); assert.equal(h.subscriptions.get("tatsu-status:ready"), 1);
+		assert.match(h.text(), /05 EXT\s+tatsu  CLI ● current   WKS ● current/);
+		assert.doesNotMatch(h.text(), /tatsu-cli:|private prose|private detail|private reason|private sha/);
+		assert.ok(h.statuses.has("tatsu-status"), "host raw status map is untouched");
+		const renders = h.renders;
+		pushTatsu(h, tatsuDTO("behind", { commitsBehind: 1, localChanges: true }));
+		assert.ok(h.renders > renders); assert.match(h.text(), /CLI ▲ update ×1 ◆ local edits/); assert.doesNotMatch(h.text(), /raw Tatsu fallback/);
+		pushTatsu(h, tatsuDTO("checking", {}, "checking"), undefined);
+		assert.match(h.text(), /tatsu  CLI · checking   WKS · checking/); assert.equal(h.statuses.has("tatsu-status"), false, "hidden default text still has structured display");
+		pushTatsu(h, tatsuDTO("inactive", {}, "inactive")); assert.match(h.text(), /raw Tatsu fallback/); assert.doesNotMatch(h.text(), /tatsu  CLI/);
+		pushTatsu(h, tatsuDTO("inactive", {}, "inactive"), undefined); assert.doesNotMatch(h.text(), /05 EXT|tatsu  CLI/);
+		pushTatsu(h, tatsuDTO("repair", { localChanges: true }));
+		const requests = tatsuRequests(h); h.events.emit("test:tatsu", { kind: "restart" }); assert.equal(tatsuRequests(h), requests + 1);
+		assert.match(h.text(), /CLI ▲ repair ◆ local edits/);
+		h.events.emit("test:tatsu", { kind: "stop" }); h.events.emit("test:tatsu", { kind: "ready" });
+		assert.match(h.text(), /raw Tatsu fallback/); assert.doesNotMatch(h.text(), /tatsu  CLI/);
+		await h.stop(); assert.deepEqual(h.errors, []);
+	}
+});
+
+test("Tatsu public events: strict snapshot whitelist, unknown/invalid fallback, optional field dropping and absent provider", async (t) => {
+	const f = await fixtures(t), path = await tatsuProducer(f), h = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { before: [path], emptyStatuses: true });
+	t.after(() => h.stop()); await h.emitStart(); await h.motion("off");
+	const good = tatsuDTO();
+	for (const invalid of [undefined, null, [], {}, { ...good, version: 2 }, { ...good, phase: "future" }, { ...good, components: [] },
+		{ ...good, components: [...good.components, good.components[0]] }, { ...good, components: [good.components[0], good.components[0]] },
+		tatsuDTO("future-state"), { ...good, components: [good.components[0], { component: "future-component", state: "current" }] },
+		{ ...good, components: [good.components[0], null] }]) {
+		pushTatsu(h, invalid); assert.match(h.text(), /raw Tatsu fallback/); assert.doesNotMatch(h.text(), /tatsu  CLI/);
+	}
+	for (const commitsBehind of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "1", null]) {
+		pushTatsu(h, tatsuDTO("behind", { commitsBehind, localChanges: "true", text: "private prose", detail: "secret" }));
+		assert.match(h.text(), /CLI ▲ update   WKS ▲ update/); assert.doesNotMatch(h.text(), /update ×|local edits|private prose|secret|raw Tatsu fallback/);
+	}
+	pushTatsu(h, tatsuDTO("behind", { commitsBehind: 0, localChanges: false })); assert.match(h.text(), /update ×0/);
+	pushTatsu(h, { ...good, components: [...good.components].reverse() }); assert.match(h.text(), /CLI ● current   WKS ● current/, "known components normalized into contract order");
+	await h.stop(); assert.equal(h.subscriptions.get("tatsu-status:changed"), 0); assert.equal(h.subscriptions.get("tatsu-status:ready"), 0);
+	const absent = await harness(f, host.SessionManager.inMemory(f.launch), "tui", { emptyStatuses: true }); t.after(() => absent.stop());
+	await absent.emitStart(); await absent.motion("off"); absent.setStatus("tatsu-status", "unrecognized producer status");
+	assert.match(absent.text(), /unrecognized producer status/); assert.doesNotMatch(absent.text(), /tatsu  CLI/);
+	assert.deepEqual(h.errors, []); assert.deepEqual(absent.errors, []);
+});
+
+test("Tatsu public events: late provider, synchronous-only replies, UI/session/component ownership, disposal and non-TUI", async (t) => {
+	const f = await fixtures(t), manager = host.SessionManager.inMemory(f.launch), h = await harness(f, manager, "tui", { emptyStatuses: true });
+	t.after(() => h.stop()); await h.emitStart(); await h.motion("off"); h.setStatus("tatsu-status", "late raw fallback");
+	let pendingReply: any, requests = 0;
+	const api = { version: 1, getSnapshot: () => tatsuDTO("behind", { commitsBehind: 1 }) };
+	const off = h.events.on("tatsu-status:request", (r: any) => { requests++; pendingReply = r.reply; });
+	h.events.emit("tatsu-status:ready", api); pendingReply(api);
+	assert.match(h.text(), /late raw fallback/); assert.doesNotMatch(h.text(), /tatsu  CLI/, "delayed discovery reply is inert");
+	off(); const answer = h.events.on("tatsu-status:request", (r: any) => { requests++; r.reply(api); }); t.after(answer);
+	h.events.emit("tatsu-status:ready", api); assert.match(h.text(), /tatsu  CLI ▲ update ×1/);
+	const previous = h.replaceFooter(); previous.dispose();
+	assert.equal(h.subscriptions.get("tatsu-status:changed"), 1); assert.deepEqual(previous.render(100), []);
+	const beforeUI = h.renders; h.replaceUI(); h.events.emit("tatsu-status:changed", tatsuDTO()); h.events.emit("tatsu-status:ready", api);
+	assert.equal(h.renders, beforeUI, "old UI events cannot publish"); assert.match(h.text(), /late raw fallback/);
+	h.replaceFooter(); await h.motion("off"); assert.match(h.text(), /CLI ▲ update ×1/);
+	manager.newSession(); const beforeSession = h.renders, priorRequests = requests;
+	h.events.emit("tatsu-status:changed", tatsuDTO()); h.events.emit("tatsu-status:ready", api);
+	assert.equal(h.renders, beforeSession); assert.equal(requests, priorRequests); assert.match(h.text(), /late raw fallback/);
+	await h.emitStart("new"); await h.motion("off"); assert.match(h.text(), /CLI ▲ update ×1/);
+	h.component.dispose(); const disposedRenders = h.renders, disposedRequests = requests;
+	assert.equal(h.subscriptions.get("tatsu-status:changed"), 0); assert.equal(h.subscriptions.get("tatsu-status:ready"), 0);
+	h.events.emit("tatsu-status:changed", tatsuDTO()); h.events.emit("tatsu-status:ready", api);
+	assert.equal(h.renders, disposedRenders); assert.equal(requests, disposedRequests);
+	await h.stop(); assert.deepEqual(h.errors, []);
+	const print = await harness(f, host.SessionManager.inMemory(f.launch), "print"); t.after(() => print.stop());
+	let queried = 0; const unlisten = print.events.on("tatsu-status:request", () => { queried++; }); t.after(unlisten);
+	await print.emitStart(); print.events.emit("tatsu-status:ready", api); print.events.emit("tatsu-status:changed", tatsuDTO());
+	assert.equal(queried, 0); assert.equal(print.subscriptions.get("tatsu-status:changed") ?? 0, 0); assert.equal(print.subscriptions.get("tatsu-status:ready") ?? 0, 0);
+	assert.equal(print.component, undefined);
+});
