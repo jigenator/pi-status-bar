@@ -23,6 +23,10 @@ const packageRoot = resolve(".");
 const source = resolve("src/extension.ts");
 // Footer colors are fixed concrete values; the host theme only converts them.
 const theme = { style: (text: string, options: object) => styleText(text, options, "truecolor"), getColorMode: () => "truecolor" };
+// Lit and lost USG squares are both `■` and differ only by style. Text shows a ghost-grey `■` (#333333) as `□` so the lit
+// count stays readable; motion checks that only compare glyphs use the raw characters.
+const GHOST_INK = "\x1b[38;2;51;51;51m\x1b[48;2;0;0;0m";
+const shownText = (line: string) => stripTerminalSequences(line.replaceAll(`${GHOST_INK}■`, `${GHOST_INK}□`));
 // Display shows the immediate parent/current directory; stored paths stay absolute.
 const shown = (path: string) => `${basename(dirname(path))}/${basename(path)}`;
 const row = (text: string, label: string) => text.split("\n").find((line) => line.includes(label)) ?? "";
@@ -116,7 +120,7 @@ async function harness(f: any, manager: any, mode = "tui", extra: { before?: str
 	runner.setUIContext(makeUI(), mode);
 	const emitStart = async (reason = "startup") => runner.emit({ type: "session_start", reason });
 	const stop = async (reason = "quit") => runner.emit({ type: "session_shutdown", reason });
-	const text = () => component?.render(300).map((line: string) => stripTerminalSequences(line)).join("\n") ?? "";
+	const text = () => component?.render(300).map(shownText).join("\n") ?? "";
 	const motion = async (args: string) => runner.getCommand("footer-motion").handler(args, runner.createCommandContext());
 	const select = async (path: string, signal?: AbortSignal, persist = true) => {
 		const id = `selection-${manager.getEntries().length}`;
@@ -755,6 +759,8 @@ test("USG: missing codexbar (ENOENT) hides the row until a later poll finds it; 
 	// The mocked wall clock moved five minutes: 04:20 is now 1h10m away.
 	const [squares, countdowns] = usgRows(h);
 	assert.match(squares, /^ {3}04 USG {2}GPT ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KMI ■■■■■■■■ ■■■■■■■■ +$/);
+	const raw = h.component.render(300).find((line: string) => line.includes("GPT"));
+	assert.equal(raw.slice(raw.indexOf("GPT"), raw.indexOf("CLD")).split(`${GHOST_INK}■`).length - 1, 2, "GPT's two lost squares are ghost-grey ■");
 	assert.match(countdowns, /^\S? +6d2h +1h10m +5d15h +3h04m +6d12h +\S?$/);
 	const lines = h.text().split("\n");
 	assert.ok(lines.findIndex((line: string) => line.includes("03 MDL")) < lines.indexOf(squares) && lines.indexOf(squares) < lines.findIndex((line: string) => line.includes("05 EXT")));
@@ -835,8 +841,9 @@ test("USG: a row that appears after startup draws in over the next decoration wa
 		return [lines[i], lines[i + 1]];
 	};
 	// The edge pulse's small square is the one size-only glyph change; it is still a lit square. Frame glyphs are
-	// ambient ghost targets, not USG content.
+	// ambient ghost targets, not USG content. `plain` compares raw glyphs across frames; `shown` reads lost squares as `□`.
 	const plain = (rows: string[]) => rows.map((line) => stripTerminalSequences(line).replaceAll("▪", "■").replace(/[┃┏┓┗┛━]/g, " "));
+	const shown = (rows: string[]) => rows.map((line) => shownText(line).replaceAll("▪", "■").replace(/[┃┏┓┗┛━]/g, " "));
 	const LOCKED = "\x1b[38;2;0;0;0m\x1b[48;2;192;254;4m\x1b[1m", GREY = "\x1b[38;2;113;113;113m\x1b[48;2;0;0;0m■";
 	await untilReal(() => usg()[0].includes(`${LOCKED} 04`));
 	// The first render with the row is tick 0 of its boot: only the plate's first three cells, latched.
@@ -857,7 +864,8 @@ test("USG: a row that appears after startup draws in over the next decoration wa
 		}
 	}
 	const settled = frames[27], [squares, below] = plain(settled);
-	assert.match(squares, /^ {3}04 USG {2}GPT ■■■■■■□□ {3}CLD ········ ········ {3}KMI ■■■■■■■■ ■■■■■■■■ +$/);
+	assert.match(shown(settled)[0], /^ {3}04 USG {2}GPT ■■■■■■□□ {3}CLD ········ ········ {3}KMI ■■■■■■■■ ■■■■■■■■ +$/);
+	assert.match(squares, /^ {3}04 USG {2}GPT ■{8} {3}CLD ········ ········ {3}KMI ■{8} ■{8} +$/);
 	assert.match(below, /^ +6d2h +pending +3h09m +6d12h +$/);
 	assert.ok(!settled.join("").includes(LOCKED), "settled when the boot ends");
 	// Each frame draws the settled characters up to its front and nothing past it; the text row trails one tick.
@@ -885,7 +893,9 @@ test("USG: a row that appears after startup draws in over the next decoration wa
 		fills.push(usg());
 	}
 	const row = plain(arrival)[0];
-	assert.match(row, /GPT ■■■■■■□□ {3}CLD ■■■■■■■□ ■■■■■■■■ {3}KMI ■■■■■■■■ ■■■■■■■■/);
+	// Only Claude's settled inks: GPT's edge may be mid-pulse, and its dim tint is the ghost grey.
+	assert.match(shown(fills.at(-1)!)[0], /CLD ■■■■■■■□ ■■■■■■■■ {3}KMI/);
+	assert.match(row, /GPT ■{8} {3}CLD ■{8} ■{8} {3}KMI ■{8} ■{8}/);
 	assert.deepEqual([row.indexOf("CLD"), row.indexOf("■", row.indexOf("CLD"))], [pendingAt, slotAt], "the column and its first square stay put");
 	assert.match(plain(arrival)[1], /1h15m {4}5d15h/);
 	// GPT's lit squares are white too, so these look only at Claude's column.

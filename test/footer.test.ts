@@ -15,7 +15,11 @@ const { visibleWidth, stripTerminalSequences, sliceByColumn, styleText } = await
 // Same concrete-color conversion Pi's Theme.style uses; no semantic theme tokens are consulted.
 const hostTheme = (mode = "truecolor") => ({ style: (text: string, options: object) => styleText(text, options, mode), getColorMode: () => mode });
 const theme = hostTheme();
-const plain = (lines: string[]) => lines.map((line) => stripTerminalSequences(line));
+// Lit and lost USG squares are both `■` and differ only by style. Text comparisons show a ghost-grey `■` as `□` so whole
+// lines still read the lit count; cell assertions check the ghost ink directly. GPT's used tint is the same grey, so its
+// pulse dim `■` frame reads `□` too.
+const GHOST_INK = /(\x1b\[38;2;51;51;51m|\x1b\[38;5;236m)(\x1b\[48;2;0;0;0m|\x1b\[48;5;16m)■/g;
+const plain = (lines: string[]) => lines.map((line) => stripTerminalSequences(line.replace(GHOST_INK, "$1$2□")));
 const rows = (f: FooterSnapshot, width = 100, frame?: FooterFrame) => plain(renderFooter(f, width, theme, frame));
 const fixture = (): FooterSnapshot => ({
 	homePath: "/home/example",
@@ -62,8 +66,8 @@ const repository = (f: FooterSnapshot) => {
 const PALETTE: Record<string, string> = {
 	"#000000": "field", "#c0fe04": "primary", "#ffffff": "text", "#cfcfcf": "secondary", "#555555": "plate", "#1c1c1c": "surface",
 	"#d79e52": "warn", "#f24723": "high", "#717171": "graphic", "#2b2010": "wz", "#300e07": "hz", "#5200ff": "violet", "#ff15bd": "pink",
-	// GPT's lit white is the text white, so it reads as `text` here.
-	"#333333": "codexUsed", "#808080": "codexMid", "#ff5c00": "claude", "#331200": "claudeUsed", "#802e00": "claudeMid",
+	// GPT's lit white is the text white, so it reads as `text` here; its used tint is the ghost grey, so `usageGhost`.
+	"#333333": "usageGhost", "#808080": "codexMid", "#ff5c00": "claude", "#331200": "claudeUsed", "#802e00": "claudeMid",
 	"#2555fc": "kimi", "#071132": "kimiUsed", "#132b7e": "kimiMid",
 };
 const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(";");
@@ -88,7 +92,8 @@ function cellsOf(line: string): TestCell[] {
 	return out;
 }
 const grid = (lines: string[]) => lines.map(cellsOf);
-const text = (cells: TestCell[]) => cells.map((c) => c.ch).join("");
+// Shown like `plain`: a ghost-grey `■` reads `□`.
+const text = (cells: TestCell[]) => cells.map((c) => (c.ch === "■" && c.fg === "usageGhost" ? "□" : c.ch)).join("");
 const HEX: Record<string, [number, number, number]> = Object.fromEntries(Object.entries(PALETTE).map(([hex, n]) => [n, [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number]]));
 const luminance = ([r, g, b]: number[]) => { const v = [r, g, b].map((x) => x / 255).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4)); return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
 const contrast = (a: string, b: string) => { const [x, y] = [luminance(HEX[a]), luminance(HEX[b])].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
@@ -1409,9 +1414,11 @@ const single = (provider: UsageProviderState["provider"], windows: Partial<Recor
 	provider, ...extra,
 	data: { windows: Object.fromEntries(Object.entries(windows).map(([key, used]) => [key, { usedPercent: used, resetsAt: NOW + resetIn }])), updatedAt: NOW, fetchedAt },
 });
-// The USG squares row and the row below it (its text row, or the next field when there is none).
-const usg = (lines: string[]) => {
-	const p = plain(lines).map((line) => line.replace(/[┃┏┓┗┛━]/g, " ")), i = p.findIndex((line) => line.includes("04 USG"));
+// The USG squares row and the row below it (its text row, or the next field when there is none). `glyphs` keeps the
+// raw characters, for motion checks where only glyphs (not the ghost's ink) must stay current.
+const glyphs = (lines: string[]) => lines.map((line) => stripTerminalSequences(line));
+const usg = (lines: string[], show = plain) => {
+	const p = show(lines).map((line) => line.replace(/[┃┏┓┗┛━]/g, " ")), i = p.findIndex((line) => line.includes("04 USG"));
 	return i < 0 ? undefined : [p[i], p[i + 1]] as const;
 };
 const squaresOf = (line: string) => line.slice(line.indexOf("04 USG") + 7).match(/[■□?·]{8}/g) ?? [];
@@ -1450,22 +1457,44 @@ test("USG snapshot: real samples at 100/48/30 columns, row order, collapse, plat
 	assert.doesNotMatch(rows(withUsage([])).join("\n"), /USG/);
 	const g = grid(renderFooter(f, 100, theme)), row = g[6], below = g[7], at = (s: string) => text(row).indexOf(s);
 	assert.ok(row.slice(2, 10).every((c) => c.fg === "field" && c.bg === "pink" && c.bold), "pink numbered plate, black lettering");
-	for (const [tag, lit, used] of [["GPT", "text", "codexUsed"], ["CLD", "claude", "claudeUsed"], ["KMI", "kimi", "kimiUsed"]]) {
+	for (const [tag, lit, counts] of [["GPT", "text", [6]], ["CLD", "claude", [7, 8]], ["KMI", "kimi", [8, 8]]] as const) {
 		assert.ok(row.slice(at(tag), at(tag) + 3).every((c) => c.fg === lit && c.bold && c.bg === "field"), `${tag} bold in its lit color`);
-		const squares = row.slice(at(tag) + 4).filter((c) => "■□".includes(c.ch)).slice(0, tag === "GPT" ? 8 : 16);
-		assert.ok(squares.every((c) => c.fg === (c.ch === "■" ? lit : used)), `${tag}: lit ■ and used □ inks`);
+		const squares = row.slice(at(tag) + 4).filter((c) => c.ch.trim()).slice(0, 8 * counts.length);
+		assert.ok(squares.every((c) => c.ch === "■" && c.bg === "field"), `${tag}: every square is a filled ■`);
+		assert.deepEqual(squares.map((c) => c.fg), counts.flatMap((n) => [...Array(n).fill(lit), ...Array(8 - n).fill("usageGhost")]), `${tag}: lit inks, then grey ghosts`);
 	}
 	assert.ok(below.filter((c) => c.ch.trim() && c.ch !== "┃").every((c) => c.fg === "secondary"), "countdowns in secondary grey");
-	// GPT is lit white: its bold tag and lit squares are #ffffff in truecolor, its used squares #333333.
+	// GPT is lit white: its bold tag and lit squares are #ffffff in truecolor, its lost squares ghost ■ in #333333.
 	const raw = renderFooter(f, 100, theme)[6], white = fg("#ffffff") + bg("#000000");
 	assert.ok(raw.includes(`${white}\x1b[1mGPT`), "GPT tag in #ffffff");
 	assert.equal(raw.slice(raw.indexOf("GPT"), raw.indexOf("CLD")).split(`${white}■`).length - 1, 6, "six lit GPT squares in #ffffff");
-	assert.equal(raw.slice(raw.indexOf("GPT"), raw.indexOf("CLD")).split(`${fg("#333333")}${bg("#000000")}□`).length - 1, 2, "two used GPT squares in #333333");
+	assert.equal(raw.slice(raw.indexOf("GPT"), raw.indexOf("CLD")).split(`${fg("#333333")}${bg("#000000")}■`).length - 1, 2, "two lost GPT squares as ■ in #333333");
 	// Same characters in 256-color mode; no truecolor escapes.
 	const indexed = renderFooter(f, 100, hostTheme("256color"));
 	assert.deepEqual(plain(indexed), plain(renderFooter(f, 100, theme)));
 	assert.doesNotMatch(indexed.join(""), /\x1b\[(38|48);2;/);
 	assert.equal(visibleWidth("■□·▪"), 4);
+});
+
+test("USG settled lost squares are a filled ghost ■ in one #333333 grey for every provider, never the lit ink", () => {
+	const lits = { codex: "text", claude: "claude", kimi: "kimi" } as const, USAGE_TAGS = { codex: "GPT", claude: "CLD", kimi: "KMI" } as const;
+	for (const [provider, lit] of Object.entries(lits) as [UsageProviderState["provider"], string][]) {
+		const f = withUsage([single(provider, provider === "codex" ? { wk: 75 } : { "5h": 50, wk: 75 })]), raw = renderFooter(f, 100, theme);
+		const row = grid(raw)[6], squares = row.slice(text(row).indexOf(USAGE_TAGS[provider]) + 4).filter((c) => c.ch.trim());
+		const expected = (provider === "codex" ? [2] : [4, 2]).flatMap((n) => [...Array(n).fill(lit), ...Array(8 - n).fill("usageGhost")]);
+		assert.ok(squares.every((c) => c.ch === "■" && c.bg === "field" && !c.bold), `${provider}: every square is a plain filled ■`);
+		assert.deepEqual(squares.map((c) => c.fg), expected, `${provider}: lit, then ghosts`);
+		assert.equal(raw[6].split(`${fg("#333333")}${bg("#000000")}■`).length - 1, expected.filter((ink) => ink === "usageGhost").length, `${provider}: ghosts in #333333`);
+		assert.notEqual(lit, "usageGhost");
+	}
+	// The lit edge's pulse keeps each provider's used tint; for CLD and KMI that is never the ghost grey. GPT's used
+	// tint is the same #333333, so its dim frames match a ghost for their 100 ms (an accepted collision).
+	assert.deepEqual(["#331200", "#071132"].map((hex) => PALETTE[hex]), ["claudeUsed", "kimiUsed"]);
+	// Lit vs ghost is luminance and hue, not shape; KMI is the weakest pair.
+	assert.deepEqual([contrast("text", "usageGhost"), contrast("claude", "usageGhost"), contrast("kimi", "usageGhost")].map((r) => r.toFixed(2)), ["12.63", "4.08", "2.28"]);
+	// The motion-off frame is the same settled ghost row.
+	const f = withUsage();
+	assert.deepEqual(renderFooter(f, 100, theme, SETTLED_FRAME), renderFooter(f, 100, theme));
 });
 
 test("USG exact snapshots at 100 columns: pending, mixed, full, failed, timeout, none and stale share one layout", () => {
@@ -1743,13 +1772,21 @@ test("USG edge pulse: the highest lit square shrinks, dims and regrows over 150 
 	// One pulse, frame by frame: lit ▪, used ▪, used ■, settled lit ■. The count and countdown stay current.
 	const f = withUsage([single("codex", { wk: 50 })]), state = startMotion(f, 0, 1, false), settled = renderFooter(f, 100, theme);
 	const squares = (lines: string[]) => grid(lines)[6].filter((c) => "■□▪".includes(c.ch)).map((c) => `${c.ch}${c.fg}`);
-	const used = Array(4).fill("□codexUsed"), lit = ["■text", "■text", "■text"];
-	for (const [at, edge] of [[3849, "■text"], [3850, "▪text"], [3899, "▪text"], [3900, "▪codexUsed"], [3949, "▪codexUsed"], [3950, "■codexUsed"], [3999, "■codexUsed"], [4000, "■text"]] as const) {
+	// GPT's used tint is the ghost grey (both #333333), so its dim frames read `usageGhost` here.
+	const used = Array(4).fill("■usageGhost"), lit = ["■text", "■text", "■text"];
+	for (const [at, edge] of [[3849, "■text"], [3850, "▪text"], [3899, "▪text"], [3900, "▪usageGhost"], [3949, "▪usageGhost"], [3950, "■usageGhost"], [3999, "■usageGhost"], [4000, "■text"]] as const) {
 		const lines = renderFooter(f, 100, theme, motionFrame(state, at));
 		assert.deepEqual(squares(lines), [...lit, edge, ...used], `${at} ms`);
-		assert.deepEqual(usg(lines)!.map((line) => line.replace("▪", "■")), usg(settled), `${at} ms: only the edge square's size changes`);
+		assert.deepEqual(usg(lines, glyphs)!.map((line) => line.replace("▪", "■")), usg(settled, glyphs), `${at} ms: only the edge square's size changes`);
 	}
 	assert.deepEqual(squares(settled), [...lit, "■text", ...used], "motion off holds a steady lit ■");
+	// CLD and KMI dim to their own used tints, distinct from the ghost grey of their lost squares.
+	for (const [provider, ink, tint] of [["claude", "claude", "claudeUsed"], ["kimi", "kimi", "kimiUsed"]] as const) {
+		const p = withUsage([single(provider, { wk: 50 })]), s = startMotion(p, 0, 1, false);
+		for (const [at, edge] of [[3850, `▪${ink}`], [3900, `▪${tint}`], [3950, `■${tint}`], [4000, `■${ink}`]] as const) {
+			assert.deepEqual(squares(renderFooter(p, 100, theme, motionFrame(s, at))), [...Array(3).fill(`■${ink}`), edge, ...Array(4).fill("■usageGhost")], `${provider} ${at} ms`);
+		}
+	}
 	assert.equal(visibleWidth("▪"), 1);
 });
 const EDGE = 150;
@@ -1802,8 +1839,9 @@ test("USG burn-out: a newer sample that lights fewer squares burns each lost squ
 	state = advanceMotion(state, half, 1000);
 	assert.deepEqual(state.usageBurns, { "claude/5h": { at: 1000, from: 8, to: 4 } });
 	assert.equal(advanceMotion(state, half, 1050), state, "re-rendering the same sample never restarts it");
-	const lit = Array(4).fill("■claude"), used = Array(4).fill("□claudeUsed");
-	for (const [at, ink] of [[0, "■text"], [99, "■text"], [100, "■claude"], [249, "■claude"], [250, "■claudeMid"], [399, "■claudeMid"], [400, "■claudeUsed"], [599, "■claudeUsed"], [600, "□claudeUsed"]] as const) {
+	// Frames are unchanged (white, lit, 50% mix, used tint); only the settled end is the grey ghost ■.
+	const lit = Array(4).fill("■claude"), used = Array(4).fill("■usageGhost");
+	for (const [at, ink] of [[0, "■text"], [99, "■text"], [100, "■claude"], [249, "■claude"], [250, "■claudeMid"], [399, "■claudeMid"], [400, "■claudeUsed"], [599, "■claudeUsed"], [600, "■usageGhost"]] as const) {
 		assert.deepEqual(inks(half, motionFrame(state, 1000 + at)), [...lit, ...Array(4).fill(ink)], `${at} ms`);
 	}
 	// Exact wakes at every step boundary.
@@ -2064,8 +2102,8 @@ test("USG fill-in when a provider's data first arrives: per cell grey, white for
 	assert.deepEqual([unfilled.usage?.["claude/5h"]?.edge !== undefined, unfilled.usage?.["claude/wk"]?.edge !== undefined], [true, true], "without a fill-in both edges pulse now");
 	state = advanceMotion(state, after, at);
 	assert.deepEqual(state.usageFill, { claude: at }, "only the provider that gained data");
-	const settled = grid(renderFooter(after, 100, theme)), settledText = usg(renderFooter(after, 100, theme));
-	assert.deepEqual(settled[SQUARES].slice(30, 47).map((c) => c.ch).join(""), "■■■■□□□□ ■■■□□□□□");
+	const settled = grid(renderFooter(after, 100, theme)), settledText = usg(renderFooter(after, 100, theme), glyphs);
+	assert.deepEqual(text(settled[SQUARES].slice(30, 47)), "■■■■□□□□ ■■■□□□□□");
 	const wakes: number[] = [];
 	for (let now = at; now <= at + 450; now += nextMotionDelay(state, now)) wakes.push(now);
 	for (let k = 1; k <= 8; k++) assert.ok(wakes.includes(at + k * MOTION_TICK_MS), `wake at tick ${k}: ${wakes}`);
@@ -2073,7 +2111,7 @@ test("USG fill-in when a provider's data first arrives: per cell grey, white for
 		const now = at + k * MOTION_TICK_MS + 10, next = advanceMotion(state, after, now), frame = motionFrame(next, now);
 		const lines = renderFooter(after, 100, theme, usgOnly(frame)), g = grid(lines);
 		// Kimi is not filling, so its edge may pulse (a size-only ▪).
-		assert.deepEqual(usg(lines)!.map((line) => line.replaceAll("▪", "■")), settledText, `tick ${k}: glyphs and countdowns are current`);
+		assert.deepEqual(usg(lines, glyphs)!.map((line) => line.replaceAll("▪", "■")), settledText, `tick ${k}: glyphs and countdowns are current`);
 		for (const slot of [30, 39]) {
 			for (let j = 0; j < 8; j++) {
 				const c = g[SQUARES][slot + j];
@@ -2097,7 +2135,7 @@ test("USG fill-in when a provider's data first arrives: per cell grey, white for
 	const refreshed = advanceMotion(state, drop, at + 100);
 	assert.deepEqual([refreshed.usageFill, refreshed.usageBurns], [{ claude: at }, {}]);
 	const lines = renderFooter(drop, 100, theme, usgOnly(motionFrame(refreshed, at + 110)));
-	assert.deepEqual(usg(lines), usg(renderFooter(drop, 100, theme)), "the running fill-in shows the newer values");
+	assert.deepEqual(usg(lines, glyphs), usg(renderFooter(drop, 100, theme), glyphs), "the running fill-in shows the newer values");
 	// After it, an ordinary refresh behaves as before: no fill-in, a normal burn-out.
 	const afterFill = advanceMotion(state, after, at + 450);
 	const burnt = advanceMotion(afterFill, drop, at + 500);
