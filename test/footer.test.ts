@@ -2385,6 +2385,22 @@ test("Tatsu: completed-result latches the state only, no first/unchanged/checkin
 	state = advanceMotion(state, current, 2200); assert.deepEqual(state.tatsuLatches, {});
 	const first = advanceMotion(startMotion({ ...current, tatsu: undefined }, 0, 2, false), current, 2500);
 	assert.deepEqual(first.tatsuLatches, {});
+	// CHK -> first result latches each component that was shown as CHK, after a reload or a later appearance.
+	const checking = tatsuFixture("checking", "checking");
+	let fromChk = advanceMotion(startMotion(checking, 0, 2, true), checking, 5000);
+	fromChk = advanceMotion(fromChk, changed, 20_000);
+	assert.deepEqual(fromChk.tatsuLatches, { "tatsu-cli": 20_000, "agent-workspace": 20_000 });
+	const later = advanceMotion(advanceMotion(startMotion({ ...current, tatsu: undefined }, 0, 2, false), checking, 3000), changed, 9000);
+	assert.deepEqual(later.tatsuLatches, { "tatsu-cli": 9000, "agent-workspace": 9000 });
+	// Only components shown as CHK latch: a mixed snapshot's real component has no baseline yet and settles.
+	const partial = tatsuFixture("checking", "current"), half = { ...partial, tatsu: { ...partial.tatsu!, phase: "checking" as const } };
+	const mixed = advanceMotion(advanceMotion(startMotion({ ...current, tatsu: undefined }, 0, 2, false), half, 3000), tatsuFixture("behind", "current"), 9000);
+	assert.deepEqual(mixed.tatsuLatches, { "tatsu-cli": 9000 });
+	// A result arriving during the warm-up or the footer boot settles; the warm-up already covers it.
+	const warming = advanceMotion(advanceMotion(startMotion({ ...current, tatsu: undefined }, 0, 2, false), checking, 3000), changed, 3300);
+	assert.deepEqual(warming.tatsuLatches, {});
+	const reloading = advanceMotion(startMotion(checking, 0, 2, true), changed, 1000);
+	assert.deepEqual(reloading.tatsuLatches, {});
 	const resumed = startMotion(local, 2600, 2, false); assert.deepEqual(resumed.tatsuLatches, {}); assert.equal(resumed.tatsuWarm, undefined);
 });
 
