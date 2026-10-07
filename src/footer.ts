@@ -122,10 +122,12 @@ const C = {
 	wz: rgbColor(0x2b, 0x20, 0x10), // 20% warning over the field
 	hz: rgbColor(0x30, 0x0e, 0x07), // 20% high over the field
 	// USG providers, from the new Marathon (GPT its white foreground token, CLD its "Signal orange" token, KMI a key-art
-	// sample): lit, used (20% over the field) and burn-out mid (50%).
+	// sample): lit, used (20% over the field) and burn-out mid (50%), for the pulse and burn-out frames.
 	codex: rgbColor(0xff, 0xff, 0xff), codexUsed: rgbColor(0x33, 0x33, 0x33), codexMid: rgbColor(0x80, 0x80, 0x80),
 	claude: rgbColor(0xff, 0x5c, 0x00), claudeUsed: rgbColor(0x33, 0x12, 0x00), claudeMid: rgbColor(0x80, 0x2e, 0x00),
 	kimi: rgbColor(0x25, 0x55, 0xfc), kimiUsed: rgbColor(0x07, 0x11, 0x32), kimiMid: rgbColor(0x13, 0x2b, 0x7e),
+	// A settled lost square, the same neutral grey for every provider.
+	usageGhost: rgbColor(0x33, 0x33, 0x33),
 };
 type Hue = keyof typeof C;
 const PONYTAIL: Record<PonytailState, { code: string; ink: Hue }> = {
@@ -1187,11 +1189,12 @@ export function renderFooter(snapshot: FooterSnapshot, width: number, theme: Foo
 			if (remaining === null) { parts.push(usagePart(cells("?".repeat(USAGE_SQUARES), grey), USAGE_SQUARES, USAGE_SQUARES, paint("?", ink({ fg: "secondary" })), 1)); continue; }
 			const lit = litOf(remaining), burn = effect?.burn, pulse = effect?.edge === undefined ? undefined : EDGE_PULSE[effect.edge];
 			const text = countdown(window.resetsAt, usageNow);
-			// The pulse only resizes and dims the lit edge square: the lit count and every other glyph stay as they are.
-			const glyphs = Array.from({ length: USAGE_SQUARES }, (_, i) => (pulse && i === lit - 1 ? pulse.glyph : i < lit || (burn && i < burn.from) ? "■" : "□")).join("");
+			// Every square is `■`; lit and lost differ by style, and a settled lost square is the shared ghost grey. The pulse
+			// only resizes and dims the lit edge square; a burn only restyles the lost squares until it settles.
+			const glyphs = Array.from({ length: USAGE_SQUARES }, (_, i) => (pulse && i === lit - 1 ? pulse.glyph : "■")).join("");
 			const squares = cells(glyphs, (i): Style => {
 				if (i < lit) return { fg: pulse?.dim && i === lit - 1 ? look.used : look.lit };
-				if (!burn || i >= burn.from) return { fg: look.used };
+				if (!burn || i >= burn.from) return { fg: "usageGhost" };
 				const e = burn.elapsed;
 				return { fg: e < BURN_STEPS[0] ? "text" : e < BURN_STEPS[1] ? look.lit : e < BURN_STEPS[2] ? look.mid : look.used };
 			});
